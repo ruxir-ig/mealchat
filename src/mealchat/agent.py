@@ -15,6 +15,7 @@ Control flow per turn:
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -82,6 +83,16 @@ class AgentResult:
 
 
 class MealChatAgent:
+    """The agent owns ONE persistent event loop (background thread).
+
+    Why: the LLM clients' httpx connection pools bind to the loop they first
+    run on. Re-creating a loop per call (asyncio.run) dead-hands the pooled
+    TLS transports ("Event loop is closed") and pays a fresh TLS handshake per
+    turn. A single long-lived loop keeps pools warm and turns fast. All
+    surfaces (CLI, FastAPI, evals, bench) go through the sync handle() — which
+    is also exactly the interface the task spec asks for.
+    """
+
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or load_settings()
         self.conn = db.connect(self.settings.db_path)
@@ -90,10 +101,22 @@ class MealChatAgent:
         self.vision_llm = models.vision_llm(self.settings)
         # estimator = same text model, temperature 0 — nutrition numbers shouldn't be creative
         self.estimator = models.make_estimator(models.text_llm(self.settings, temperature=0.0))
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._loop.run_forever, daemon=True, name="mealchat-agent-loop"
+        )
+        self._thread.start()
 
     # ------------------------------------------------------------------ core
 
-    async def handle_async(
+    def handle(self, user_id: str, text: str, image_path: str | None = None) -> AgentResult:
+        """The stable core interface: agent.handle(user_id, text, image_path=None)."""
+        fut = asyncio.run_coroutine_threadsafe(
+            self._handle(user_id, text, image_path), self._loop
+        )
+        return fut.result(timeout=180)
+
+    async def _handle(
         self, user_id: str, text: str, image_path: str | None = None
     ) -> AgentResult:
         t0 = time.perf_counter()
@@ -145,10 +168,6 @@ class MealChatAgent:
         db.add_message(self.conn, user_id, "user", human_content[:500])
         db.add_message(self.conn, user_id, "assistant", result.reply[:500])
         return result
-
-    def handle(self, user_id: str, text: str, image_path: str | None = None) -> AgentResult:
-        """Sync wrapper — the stable core interface used by CLI/bench/evals."""
-        return asyncio.run(self.handle_async(user_id, text, image_path))
 
     # ------------------------------------------------------------- internals
 

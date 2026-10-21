@@ -15,11 +15,27 @@ Schema:
 
 from __future__ import annotations
 
+import functools
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+# Tools execute inside langgraph's thread executor, so the connection is hit
+# from worker threads. check_same_thread=False + this lock serialize access;
+# every public op here is a sub-millisecond SQLite call, so no latency cost.
+_LOCK = threading.RLock()
+
+
+def _locked(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _LOCK:
+            return fn(*args, **kwargs)
+
+    return wrapper
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meals (
@@ -89,13 +105,14 @@ CREATE INDEX IF NOT EXISTS idx_msg_user ON messages(user_id, id);
 def connect(db_path: str | Path) -> sqlite3.Connection:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
+@_locked
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     conn.commit()
@@ -139,6 +156,7 @@ class Meal:
     items: list[MealItem]
 
 
+@_locked
 def add_meal(
     conn: sqlite3.Connection,
     user_id: str,
@@ -206,6 +224,7 @@ def _row_to_meal(conn: sqlite3.Connection, row: sqlite3.Row) -> Meal:
     )
 
 
+@_locked
 def get_meals(
     conn: sqlite3.Connection,
     user_id: str,
@@ -229,6 +248,7 @@ def get_meals(
     return [_row_to_meal(conn, r) for r in rows]
 
 
+@_locked
 def get_meal(conn: sqlite3.Connection, meal_id: int) -> Meal | None:
     row = conn.execute(
         "SELECT * FROM meals WHERE id = ? AND deleted_at IS NULL", (meal_id,)
@@ -236,6 +256,7 @@ def get_meal(conn: sqlite3.Connection, meal_id: int) -> Meal | None:
     return _row_to_meal(conn, row) if row else None
 
 
+@_locked
 def edit_meal(
     conn: sqlite3.Connection,
     meal_id: int,
@@ -277,6 +298,7 @@ def edit_meal(
         return cur.rowcount > 0
 
 
+@_locked
 def delete_meal(conn: sqlite3.Connection, meal_id: int) -> bool:
     """Soft delete — keeps an audit trail, excluded from all reads/totals."""
     with conn:
@@ -302,6 +324,7 @@ class DayTotals:
     meals: int
 
 
+@_locked
 def day_totals(conn: sqlite3.Connection, user_id: str, date: str) -> DayTotals:
     row = conn.execute(
         "SELECT COUNT(DISTINCT m.id) AS meal_count,"
@@ -344,6 +367,7 @@ def normalize_food(name: str) -> str:
     return " ".join(name.lower().strip().split())
 
 
+@_locked
 def upsert_food(conn: sqlite3.Connection, food: Food) -> None:
     with conn:
         conn.execute(
@@ -366,6 +390,7 @@ def upsert_food(conn: sqlite3.Connection, food: Food) -> None:
         )
 
 
+@_locked
 def get_food(conn: sqlite3.Connection, key: str) -> Food | None:
     row = conn.execute("SELECT * FROM foods WHERE key = ?", (normalize_food(key),)).fetchone()
     if not row:
@@ -400,6 +425,7 @@ class Memory:
     updated_at: str
 
 
+@_locked
 def save_memory(
     conn: sqlite3.Connection,
     user_id: str,
@@ -432,6 +458,7 @@ def save_memory(
         return int(cur.lastrowid)
 
 
+@_locked
 def get_memories(conn: sqlite3.Connection, user_id: str, active_only: bool = True) -> list[Memory]:
     q = "SELECT * FROM memories WHERE user_id = ?"
     if active_only:
@@ -454,6 +481,7 @@ def get_memories(conn: sqlite3.Connection, user_id: str, active_only: bool = Tru
     ]
 
 
+@_locked
 def forget_memory(conn: sqlite3.Connection, memory_id: int) -> bool:
     with conn:
         cur = conn.execute(
@@ -467,6 +495,7 @@ def forget_memory(conn: sqlite3.Connection, memory_id: int) -> bool:
 # --------------------------------------------------------------------------
 
 
+@_locked
 def add_message(conn: sqlite3.Connection, user_id: str, role: str, content: str) -> None:
     with conn:
         conn.execute(
@@ -475,6 +504,7 @@ def add_message(conn: sqlite3.Connection, user_id: str, role: str, content: str)
         )
 
 
+@_locked
 def recent_messages(conn: sqlite3.Connection, user_id: str, limit: int = 8) -> list[dict]:
     rows = conn.execute(
         "SELECT role, content FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT ?",
