@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -201,6 +202,95 @@ def test_explicit_meal_type_not_overridden(toolkit, conn):
         {"items": [{"food": "roti", "quantity": 1}], "meal_type": "dinner"}
     )
     assert db.get_meals(conn, "u1")[0].meal_type == "dinner"
+
+
+def test_keyed_preference_upserts_for_any_kind(toolkit, conn):
+    """key='diet' upserts like target keys do — re-saving replaces, not piles."""
+    ts, _ = toolkit
+    ts["save_memory"].invoke({"kind": "preference", "content": "vegetarian", "key": "diet"})
+    ts["save_memory"].invoke({"kind": "preference", "content": "pescatarian now", "key": "diet"})
+    prefs = [m for m in db.get_memories(conn, "u1") if m.kind == "preference" and m.key == "diet"]
+    assert len(prefs) == 1
+    assert prefs[0].content == "pescatarian now"
+
+
+def test_usual_saved_with_structured_items_roundtrip(toolkit, conn):
+    ts, _ = toolkit
+    ts["save_memory"].invoke(
+        {
+            "kind": "usual",
+            "content": "2 parathas and chai",
+            "key": "breakfast",
+            "items": [
+                {"food": "paratha", "quantity": 2},
+                {"food": "chai", "quantity": 1},
+            ],
+        }
+    )
+    usual = next(m for m in db.get_memories(conn, "u1") if m.kind == "usual")
+    items = db.parse_memory_data(usual)
+    assert items == [
+        {"food": "paratha", "quantity": 2.0, "unit": ""},
+        {"food": "chai", "quantity": 1.0, "unit": ""},
+    ]
+    block = memory.memory_block(conn, "u1")
+    assert "usual (breakfast)" in block
+    assert "items: paratha x2, chai x1" in block
+
+
+def test_repeat_meals_copies_exactly(toolkit, conn):
+    ts, effects = toolkit
+    old_today = (datetime.now(TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
+    db.add_meal(
+        conn, "u1", old_today, "2 rotis and dal",
+        [
+            db.MealItem("roti", 2, "medium roti", 240, 6, 36, 3),
+            db.MealItem("dal", 1, "bowl", 180, 9, 25, 4, notes="homestyle"),
+        ],
+        meal_type="lunch",
+    )
+    out = ts["repeat_meals"].invoke({"meal_ids": [1], "date": "today"})
+    assert "Copied 1 meal(s)" in out
+    today = db.local_today(TZ)
+    meals = db.get_meals(conn, "u1", date=today)
+    assert len(meals) == 1
+    orig = db.get_meal(conn, 1).items
+    assert [(i.food, i.quantity, i.calories, i.notes) for i in meals[0].items] == [
+        (i.food, i.quantity, i.calories, i.notes) for i in orig
+    ]  # exact copy, no re-estimation
+    assert effects.get("repeated") == [meals[0].id]
+
+
+def test_repeat_meals_rejects_other_users(toolkit, conn):
+    ts, _ = toolkit
+    db.add_meal(conn, "u2", "2026-10-21", "x", [db.MealItem("roti", 1, "roti", 120, 3, 18, 1.5)])
+    out = ts["repeat_meals"].invoke({"meal_ids": [1]})
+    assert "Error" in out
+    assert db.get_meals(conn, "u1") == []
+
+
+def test_memories_data_column_migrates(tmp_path):
+    c = db.connect(tmp_path / "old.db")
+    # simulate a DB created before the `data` column existed
+    c.executescript(
+        """
+        CREATE TABLE memories (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
+          kind TEXT NOT NULL, key TEXT, content TEXT NOT NULL,
+          num_value REAL, unit TEXT, active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        """
+    )
+    c.execute(
+        "INSERT INTO memories (user_id, kind, content, created_at, updated_at) VALUES ('u', 'note', 'x', 't', 't')"
+    )
+    c.commit()
+    db.init_db(c)  # runs migrations
+    cols = {r[1] for r in c.execute("PRAGMA table_info(memories)")}
+    assert "data" in cols
+    assert db.get_memories(c, "u")[0].content == "x"  # old rows intact
+    c.close()
 
 
 def test_bad_date_returns_error(toolkit):

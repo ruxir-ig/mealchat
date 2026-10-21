@@ -11,6 +11,7 @@ a list of failures — empty list = pass.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -214,7 +215,15 @@ CASES.append(
 
 
 def seed_usual_memory(conn, user_id):
-    db.save_memory(conn, user_id, "usual", "breakfast: 2 paratha and 1 cup chai")
+    db.save_memory(
+        conn, user_id, "usual", "2 paratha and 1 cup chai", key="breakfast",
+        data=json.dumps(
+            [
+                {"food": "paratha", "quantity": 2, "unit": "medium paratha"},
+                {"food": "chai", "quantity": 1, "unit": "cup with sugar"},
+            ]
+        ),
+    )
     db.save_memory(conn, user_id, "target", "140g protein daily", key="protein", num_value=140, unit="g")
 
 
@@ -224,9 +233,11 @@ def check_my_usual(conn, user_id, replies):
     if len(meals) != 1:
         fails.append(f"SEPARATOR FAIL: 'my usual' should log exactly 1 meal, got {len(meals)}")
         return fails
-    foods = {i.food.lower() for i in meals[0].items}
-    if not {"paratha", "chai"} <= foods:
-        fails.append(f"usual memory says paratha+chai, logged: {foods}")
+    items = {i.food.lower(): i.quantity for i in meals[0].items}
+    if items.get("paratha") != 2 or items.get("chai") != 1:
+        fails.append(
+            f"structured usual says paratha x2 + chai x1; logged exactly: {items}"
+        )
     return fails
 
 

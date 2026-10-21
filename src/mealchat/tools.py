@@ -1,18 +1,20 @@
 """Agent tools.
 
-Tool surface (7 tools, deliberately split this way — see README):
-  write path:   log_meal, edit_meal, delete_meal, save_memory
+Tool surface (9 tools, deliberately split this way — see README):
+  write path:   log_meal, edit_meal, delete_meal, repeat_meals, save_memory, forget_memory
   read path:    get_meals, day_totals, nutrition_lookup
 
 log_meal resolves nutrition internally (table -> cache -> one batched LLM
 estimate) so the common case is ONE tool call, not a lookup-then-log dance.
-Corrections go through edit_meal (replace items), never a second log_meal —
-that is what prevents double-counting. Tools are built per turn via a factory
-closure that binds user_id/date/source so every tool stays user-isolated.
+Corrections go through edit_meal (spot changes), never a second log_meal —
+that is what prevents double-counting. repeat_meals copies items exactly.
+Tools are built per turn via a factory closure that binds user_id/date/source
+so every tool stays user-isolated.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from datetime import datetime, timedelta
@@ -207,6 +209,41 @@ def build_tools(
         return "\n".join(_fmt_meal(m) for m in meals)
 
     @tool
+    def repeat_meals(meal_ids: list[int], date: str = "today") -> str:
+        """Copy past meals to a date with their items EXACTLY as logged — no
+        re-estimation, no nutrition drift. The tool for 'same as yesterday':
+        get_meals(date='yesterday') first, then ONE repeat_meals call with all
+        those meal ids.
+
+        meal_ids: from get_meals. date: 'today', 'yesterday' or YYYY-MM-DD.
+        """
+        try:
+            d = _resolve_date(date, tz)
+        except ValueError as e:
+            return f"Error: {e}"
+        if not meal_ids:
+            return "Error: no meal ids to repeat."
+        meals = []
+        for mid in meal_ids:
+            meal = db.get_meal(conn, mid)
+            if meal is None or meal.user_id != user_id:
+                return f"Error: meal #{mid} not found for this user."
+            meals.append(meal)
+        copied = []
+        for meal in meals:
+            new_id = db.add_meal(
+                conn, user_id, d, meal.description, meal.items,
+                meal_type=meal.meal_type, source=source,
+            )
+            copied.append(new_id)
+            effects.setdefault("repeated", []).append(new_id)
+        out = [f"Copied {len(copied)} meal(s) to {d}:"]
+        for meal, new_id in zip(meals, copied):
+            out.append(f"- meal #{new_id} = {meal.description} ({_fmt_meal(meal)})")
+        out.append(_totals_line(conn, user_id, d, tz))
+        return "\n".join(out)
+
+    @tool
     def edit_meal(
         meal_id: int,
         changes: list[MealChange],
@@ -373,17 +410,21 @@ def build_tools(
         key: str = "",
         value: float = 0,
         unit: str = "",
+        items: list[LogItem] | None = None,
     ) -> str:
         """Save a durable fact about the user that must survive across
         sessions. Use sparingly — only facts worth remembering, never one-off
         meal details or small talk.
 
-        kind: 'preference' (e.g. 'vegetarian'), 'target' (a daily nutrition
-        goal), 'usual' (a meal they eat regularly, itemized like '2 paratha
-        and 1 cup chai'), 'note' (anything else durable).
-        For targets also set key ('calories'|'protein'|'carbs'|'fat'),
-        value (number) and unit ('kcal'|'g'). Saving again with the same kind+key
-        updates the fact instead of duplicating it.
+        kind: 'preference', 'target', 'usual', 'note'.
+        key: an upsert key so saving again REPLACES the previous version of
+        the same fact instead of duplicating it — use 'diet' for diet
+        preferences and the MEAL TYPE (breakfast/lunch/dinner/snack) for
+        usuals; targets use calories|protein|carbs|fat.
+        content: one short human-readable sentence for the fact.
+        items: for usuals, the meal's foods (food/quantity/unit) — stored
+        structured, so 'my usual' logs exactly these items later.
+        For targets also set value (number) and unit ('kcal'|'g').
         """
         content = content.strip()
         if not content:
@@ -393,12 +434,21 @@ def build_tools(
             if k not in ("calories", "protein", "carbs", "fat") or not value:
                 return "Error: targets need key in calories/protein/carbs/fat and a numeric value."
             db.save_memory(
-                conn, user_id, kind, content, key=k, num_value=float(value), unit=unit or ("kcal" if k == "calories" else "g")
+                conn, user_id, kind, content, key=k,
+                num_value=float(value), unit=unit or ("kcal" if k == "calories" else "g"),
             )
         else:
-            db.save_memory(conn, user_id, kind, content)
+            data = None
+            if items:
+                data = json.dumps(
+                    [
+                        {"food": i.food, "quantity": i.quantity, "unit": i.unit or ""}
+                        for i in items
+                    ]
+                )
+            db.save_memory(conn, user_id, kind, content, key=k, data=data)
         effects.setdefault("memories", []).append(f"{kind}:{content[:60]}")
-        return f"Remembered ({kind}): {content}"
+        return f"Remembered ({kind}" + (f", {k}" if k else "") + f"): {content}"
 
     @tool
     def forget_memory(search: str) -> str:
@@ -425,4 +475,14 @@ def build_tools(
         effects.setdefault("forgotten", []).extend(m.content for m in hits)
         return "Forgot: " + "; ".join(f"{m.kind}: {m.content}" for m in hits)
 
-    return [log_meal, get_meals, edit_meal, delete_meal, day_totals, nutrition_lookup, save_memory, forget_memory]
+    return [
+        log_meal,
+        get_meals,
+        repeat_meals,
+        edit_meal,
+        delete_meal,
+        day_totals,
+        nutrition_lookup,
+        save_memory,
+        forget_memory,
+    ]

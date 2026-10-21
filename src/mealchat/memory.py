@@ -41,8 +41,25 @@ def memory_block(conn: sqlite3.Connection, user_id: str) -> str:
     for m in mems:
         if m.kind == "target" and m.key:
             lines.append(f"- target {m.key}: {m.num_value:g}{m.unit or ''} per day")
-        else:
-            lines.append(f"- {m.kind}: {m.content}")
+            continue
+        label = f"- {m.kind} ({m.key})" if m.key else f"- {m.kind}"
+        suffix = _items_suffix(m)
+        lines.append(f"{label}: {m.content}{suffix}")
         if len(lines) >= _MAX_LINES:
             break
     return "\n".join(lines)
+
+
+def _items_suffix(m: db.Memory) -> str:
+    """Structured item list for usuals saved with items (JSON in `data`)."""
+    items = db.parse_memory_data(m)
+    if not items:
+        return ""
+    parts = []
+    for it in items:
+        if isinstance(it, dict) and it.get("food"):
+            try:
+                parts.append(f"{it['food']} x{float(it.get('quantity', 1)):g}")
+            except (TypeError, ValueError):
+                parts.append(str(it.get("food")))
+    return f" — items: {', '.join(parts)}" if parts else ""

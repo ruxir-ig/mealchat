@@ -16,6 +16,7 @@ Schema:
 from __future__ import annotations
 
 import functools
+import json
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -82,8 +83,9 @@ CREATE TABLE IF NOT EXISTS memories (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id    TEXT NOT NULL,
   kind       TEXT NOT NULL,                 -- preference | target | usual | note
-  key        TEXT,                         -- targets: calories|protein|carbs|fat
+  key        TEXT,                         -- upsert key; e.g. 'diet', 'breakfast', 'protein'
   content    TEXT NOT NULL,
+  data       TEXT,                         -- JSON payload, e.g. structured usual items
   num_value  REAL,
   unit       TEXT,
   active     INTEGER NOT NULL DEFAULT 1,
@@ -123,6 +125,7 @@ def init_db(conn: sqlite3.Connection) -> None:
 def _migrate(conn: sqlite3.Connection) -> None:
     """Additive column migrations for DBs created by older versions."""
     _add_column_if_missing(conn, "foods", "grams_per_unit", "REAL")
+    _add_column_if_missing(conn, "memories", "data", "TEXT")
 
 
 def _add_column_if_missing(
@@ -437,10 +440,22 @@ class Memory:
     kind: str
     key: str | None
     content: str
-    num_value: float | None
-    unit: str | None
-    created_at: str
-    updated_at: str
+    data: str | None = None
+    num_value: float | None = None
+    unit: str | None = None
+    created_at: str = ""
+    updated_at: str = ""
+
+
+def parse_memory_data(m: Memory) -> list[dict]:
+    """Decode a memory's JSON data payload (e.g. structured usual items)."""
+    if not m.data:
+        return []
+    try:
+        parsed = json.loads(m.data)
+        return parsed if isinstance(parsed, list) else []
+    except json.JSONDecodeError:
+        return []
 
 
 @_locked
@@ -450,16 +465,20 @@ def save_memory(
     kind: str,
     content: str,
     key: str | None = None,
+    data: str | None = None,
     num_value: float | None = None,
     unit: str | None = None,
 ) -> int:
-    """Upsert: one active row per (user, kind, key). Replaces stale versions."""
+    """Upsert. With a key: one active row per (user, kind, key) — saving again
+    replaces the previous version for ANY kind. Without a key: exact-content
+    dedupe. `data` is an optional JSON payload (structured usual items)."""
     now = _now()
     with conn:
-        if kind == "target" and key:
+        if key:
             conn.execute(
-                "UPDATE memories SET active = 0, updated_at = ? WHERE user_id = ? AND kind = 'target' AND key = ?",
-                (now, user_id, key),
+                "UPDATE memories SET active = 0, updated_at = ?"
+                " WHERE user_id = ? AND kind = ? AND key = ?",
+                (now, user_id, kind, key),
             )
         else:
             dup = conn.execute(
@@ -469,9 +488,9 @@ def save_memory(
             if dup:
                 return int(dup["id"])
         cur = conn.execute(
-            "INSERT INTO memories (user_id, kind, key, content, num_value, unit, active, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
-            (user_id, kind, key, content, num_value, unit, now, now),
+            "INSERT INTO memories (user_id, kind, key, content, data, num_value, unit, active, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            (user_id, kind, key, content, data, num_value, unit, now, now),
         )
         return int(cur.lastrowid)
 
@@ -490,6 +509,7 @@ def get_memories(conn: sqlite3.Connection, user_id: str, active_only: bool = Tru
             kind=r["kind"],
             key=r["key"],
             content=r["content"],
+            data=r["data"],
             num_value=r["num_value"],
             unit=r["unit"],
             created_at=r["created_at"],
