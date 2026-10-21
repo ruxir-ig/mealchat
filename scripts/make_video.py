@@ -106,12 +106,19 @@ def _fonts():
                 font = ImageFont.truetype(path, size)
                 coverage = set(TTFont(path).getBestCmap().keys())
                 return font, coverage
-        return None, set()
+        raise RuntimeError(f"no font found for candidates: {cands} — refusing to render silently-empty text")
 
-    title, title_cov = pick(["/usr/share/fonts/Adwaita/AdwaitaSans-Bold.ttf"], 54)
-    head, head_cov = pick(["/usr/share/fonts/Adwaita/AdwaitaSans-Bold.ttf"], 30)
-    mono, mono_cov = pick(["/usr/share/fonts/Adwaita/AdwaitaMono-Regular.ttf"], 22)
-    mono_s, _ = pick(["/usr/share/fonts/Adwaita/AdwaitaMono-Regular.ttf"], 19)
+    sans_bold = [
+        "/usr/share/fonts/Adwaita/AdwaitaSans-Bold.ttf",
+        str(Path.home() / ".local/share/fonts/Input/Input_Fonts/InputSans/InputSans/InputSans-Bold.ttf"),
+        "/usr/share/fonts/Adwaita/AdwaitaMono-Bold.ttf",
+    ]
+    mono_c = ["/usr/share/fonts/Adwaita/AdwaitaMono-Regular.ttf"]
+
+    title, title_cov = pick(sans_bold, 54)
+    head, head_cov = pick(sans_bold, 30)
+    mono, mono_cov = pick(mono_c, 22)
+    mono_s, _ = pick(mono_c, 19)
     fonts = {"title": title, "head": head, "mono": mono, "mono_s": mono_s}
     coverage = {"title": title_cov, "head": head_cov, "mono": mono_cov, "mono_s": mono_cov}
     return fonts, coverage
@@ -166,6 +173,9 @@ def _wrap(draw, text: str, font, max_w: float, first_prefix_w: float = 0.0) -> l
 def _dur(block: dict) -> float:
     if block["type"] == "photo":
         return 3.0
+    if block["type"] in ("bigtitle", "subtitle"):
+        # the title card must show the project name + subtitle from frame 1
+        return 0.8 * SPEED
     if block["type"] == "text":
         # diagram/policy lines appear WHOLE — char-by-char on long sys lines
         # left the architecture scene mostly empty for its first half
@@ -253,7 +263,9 @@ def _scene_blocks(session: list[dict]) -> list[tuple[str, list[dict]]]:
         ]),
         ("end", [
             {"type": "bigtitle", "text": "github.com/ruxir-ig/mealchat"},
-            {"type": "subtitle", "text": "20-case eval suite | 63 unit tests | README with the full design notes"},
+            {"type": "subtitle", "text": "conversational meal-logging agent - CalorAI test task"},
+            {"type": "callout", "text": "20-case evals: 59/60 over 3 repeats | 63 unit tests | text p50 3.9s | photo p50 10.4s"},
+            {"type": "callout", "text": "README has the full design notes: memory, tools, ask-vs-log line, honest gaps"},
         ]),
     ]
     return scenes
@@ -290,7 +302,7 @@ def render() -> None:
     scenes = _scene_blocks(session)
     total = 0.0
     for _, blocks in scenes:
-        total += sum(_dur(b) for b in blocks) + 0.9 * len(blocks) + 2.2
+        total += sum(_dur(b) for b in blocks) + 0.9 * len(blocks) + 1.0
     print(f"natural duration ~= {total / 60:.1f} min")
 
     def txt(role: str, text: str) -> str:
@@ -314,7 +326,7 @@ def render() -> None:
             b["_text"] = txt(_role(b), b.get("text", ""))
             b["_meta_txt"] = txt("mono_s", f"({b['meta']})") if b.get("meta") else ""
             t += b["_dur"] + 0.9
-        scene_len = t + 2.2
+        scene_len = t + 1.0
         header_txt = txt("head", f"mealchat - {scene_name}")
         n_frames = int(scene_len * FPS)
         for f in range(n_frames):
@@ -338,7 +350,7 @@ def render() -> None:
                     continue
                 if b["type"] in ("subtitle", "subtitle2"):
                     fnt = fonts["head"] if b["type"] == "subtitle" else fonts["mono"]
-                    s = b["_text"][: int(len(b["_text"]) * shown) + 1]
+                    s = b["_text"] if b["type"] == "subtitle" else b["_text"][: int(len(b["_text"]) * shown) + 1]
                     for ln in _wrap(d, s, fnt, W - 100):  # centered AND width-checked
                         d.text((W // 2 - d.textlength(ln, font=fnt) // 2, y), ln,
                                font=fnt, fill=MUTED if b["type"] == "subtitle2" else FG)
@@ -407,6 +419,59 @@ def render() -> None:
     print(f"rendered {frame_idx} frames -> {out} ({out.stat().st_size / 1e6:.1f} MB, {frame_idx / FPS / 60:.1f} min)")
     print(f"sanitizer: {_STATS['substituted']} chars substituted to ASCII, {_STATS['dropped']} dropped (emojis)")
     _verify_frames(frames_dir)
+    _verify_1fps(out)
+
+
+def _verify_1fps(out: Path) -> None:
+    """The reviewer's check: sample the mp4 at 1 fps, crop away the header band
+    (top 9%) and footer band (bottom 7%), count pixels with luminance > 60.
+    Prints every run of empty-body seconds and FAILS if any run is >= 2s
+    (a 1-second scene transition is allowed). Also asserts the header title
+    is actually rendered in every sampled frame."""
+    import shutil
+    import subprocess as sp
+
+    from PIL import Image
+
+    fps_dir = Path("/tmp/opencode/video_1fps")
+    if fps_dir.exists():
+        shutil.rmtree(fps_dir)
+    fps_dir.mkdir(parents=True)
+    sp.run(
+        ["ffmpeg", "-y", "-i", str(out), "-vf", "fps=1", str(fps_dir / "s_%04d.png")],
+        check=True, capture_output=True,
+    )
+    samples = sorted(fps_dir.glob("s_*.png"))
+    empty_header, empty_body, body_runs = 0, 0, []
+    run_start = None
+
+    def _bright_pixels(gray_img) -> int:
+        # count pixels with luminance > 60 (sum the histogram bins above 60)
+        return sum(gray_img.histogram()[61:])
+
+    for i, f in enumerate(samples):
+        im = Image.open(f).convert("L")
+        w, h = im.size
+        top, bottom = int(h * 0.09), int(h * 0.07)
+        header_has_text = _bright_pixels(im.crop((0, 0, w, top))) > 0
+        body_has_text = _bright_pixels(im.crop((0, top, w, h - bottom))) > 0
+        if not header_has_text:
+            empty_header += 1
+        if not body_has_text:
+            empty_body += 1
+            run_start = i if run_start is None else run_start
+        elif run_start is not None:
+            body_runs.append((run_start, i - run_start))
+            run_start = None
+    if run_start is not None:
+        body_runs.append((run_start, len(samples) - run_start))
+    long_runs = [(s, n) for s, n in body_runs if n >= 2]
+    print(f"1fps check: {len(samples)}s sampled, {empty_body}s empty body, {empty_header}s empty header")
+    print(f"blank body runs: {body_runs or 'none'}")
+    if empty_header:
+        raise SystemExit(f"header title missing in {empty_header} sampled seconds")
+    if long_runs:
+        raise SystemExit(f"blank body runs >= 2s: {long_runs}")
 
 
 def _verify_frames(frames_dir: Path) -> None:
