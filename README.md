@@ -132,17 +132,20 @@ Current run: **13/13 passing** (live models; conversation-level nondeterminism m
 
 ## Latency
 
-Measured by `scripts/bench.py` around `agent.handle()` — the full core (vision preprocessing + graph loop + tools), excluding UI/HTTP. Single user, warm connections, tested configuration, 2026-10-21.
+Measured by `scripts/bench.py` around `agent.handle()` — the full core (vision preprocessing + graph loop + tools), excluding UI/HTTP. Single user, warm connections, **final code, tested configuration**, 2026-10-21. *(The public defaults — gpt-4o-mini / gpt-4o — have **not** been benchmarked: no OpenAI key exists in this environment. Every number below comes from the tested config.)*
 
 | scenario | n | p50 | p95 | mean | notes |
 |---|---|---|---|---|---|
-| text: log a meal | 10 | **3.0s** | 4.1s | 3.2s | 1 tool call |
-| text: day totals query | 10 | **3.4s** | 4.7s | 3.4s | 1 tool call |
-| text: correction | 10 | **5.0s** | 5.6s | 5.0s | 2 tool calls (find + edit) |
-| photo: log plate | 6 | **9.4s** | 22.1s | 13.5s | vision 5.8s + agent 4.0s (p50 splits) |
-| photo: + caption | 6 | **13.4s** | 17.7s | 13.5s | vision 9.6s + agent 3.9s |
-| **pooled text** | 30 | **3.4s** | **5.5s** | 3.8s | |
-| **pooled photo** | 12 | **13.4s** | **22.1s** | 13.5s | |
+| text: log a meal | 20 | **3.0s** | 3.8s | 3.2s | 1 tool call, all foods known |
+| text: day totals query | 20 | **2.9s** | 4.3s | 3.1s | 1 tool call |
+| text: correction | 20 | **4.6s** | 5.5s | 4.7s | 2 tool calls (find + edit) |
+| text: log unknown food | 20 | **8.9s** | 13.0s | 9.6s | estimator round trip paid every run (cache row wiped) |
+| photo: log plate | 10 | **12.0s** | 22.2s | 13.6s | vision 6.7s + agent 5.2s (p50 splits) |
+| photo: + caption | 10 | **10.1s** | 15.3s | 10.8s | vision 5.7s + agent 4.2s |
+| **pooled text** | 80 | **3.9s** | **10.6s** | 5.1s | |
+| **pooled photo** | 20 | **10.4s** | **18.7s** | 12.2s | |
+
+The known-foods log path is the messaging-speed story (3.0s p50). The honest tails: a first-time unknown food costs an extra estimator round trip (~3× the simple log), and the photo path is vision-model-bound with a hard 20s time budget before it degrades to asking the user.
 
 **What I did to get there:**
 
@@ -153,7 +156,7 @@ Measured by `scripts/bench.py` around `agent.handle()` — the full core (vision
 - **Lean prompts** — system prompt + memory block + 8-turn history + one photo block ≈ 1.2K tokens per turn.
 - **Correct tool ordering** — a simple log is 2 LLM round trips (decide+tool, then confirm); a correction is 3 (find, edit, confirm).
 
-**What I couldn't fix (and why):** on the tested configuration the photo path is vision-model-bound — 4–10s on a simple plate, up to ~20s on a busy thali, with occasional long stalls (timeout 120s, one retry). With budget this is the first swap: a faster vision endpoint, plus an async queue + streaming replies so the user sees "analyzing your photo…" immediately. On the text path, the second round trip (the confirmation message) could be templated away to save ~1.5s — I chose reply quality over the shave.
+**What I couldn't fix (and why):** on the tested configuration the photo path is vision-model-bound — p50 10.4s, p95 18.7s, and one bench run in the p95 tail means the model simply takes that long. I bounded the damage instead: a hard `MEALCHAT_VISION_TIMEOUT` (20s default, zero retries) after which the turn degrades to the ask-the-user path rather than stalling. With budget this is the first swap: a faster vision endpoint, plus an async queue + streaming replies so the user sees "looking at your plate…" immediately. On the text path, the second round trip (the confirmation message) could be templated away to save ~1.5s — I chose reply quality over the shave.
 
 ## Assumptions and trade-offs
 

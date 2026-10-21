@@ -27,6 +27,11 @@ from mealchat.config import load_settings
 
 PHOTO = "fixtures/photos/Chapati.jpg"
 
+# a food that is NOT in the builtin table — its cached estimate row is wiped
+# before every bench run, so each run pays for the full estimator round trip
+UNCACHED_FOOD_KEY = "truffle pasta with mushrooms"
+UNCACHED_FOOD_TURN = f"had a bowl of {UNCACHED_FOOD_KEY} for lunch"
+
 
 def pct(xs: list[float], p: float) -> float:
     if not xs:
@@ -54,11 +59,12 @@ def main() -> None:
     agent = MealChatAgent(settings)
 
     scenarios = [
-        ("text_log", "had 2 rotis and dal for lunch", None, False, 10),
-        ("text_query", "how am I doing today?", None, True, 10),
-        ("text_correction", "actually that was 3 rotis not 2", None, True, 10),
-        ("photo_log", "", PHOTO, False, 6),
-        ("photo_caption", "this was my lunch", PHOTO, False, 6),
+        ("text_log", "had 2 rotis and dal for lunch", None, False, 20),
+        ("text_query", "how am I doing today?", None, True, 20),
+        ("text_correction", "actually that was 3 rotis not 2", None, True, 20),
+        ("text_log_unknown", UNCACHED_FOOD_TURN, None, False, 20),
+        ("photo_log", "", PHOTO, False, 10),
+        ("photo_caption", "this was my lunch", PHOTO, False, 10),
     ]
 
     all_text: list[float] = []
@@ -75,6 +81,12 @@ def main() -> None:
             uid = f"bench_{name}_{i}"
             if seed:
                 seed_meal(agent.conn, uid, settings.tz)
+            if name == "text_log_unknown":
+                # wipe the cached estimate so every run pays for the estimator
+                with agent.conn:
+                    agent.conn.execute(
+                        "DELETE FROM foods WHERE key = ?", (UNCACHED_FOOD_KEY,)
+                    )
             r = agent.handle(uid, text, image_path=photo)
             lats.append(r.latency_ms / 1000)
             if photo:
