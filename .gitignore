@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Env & secrets
+.env
+
+# Runtime data (SQLite DB, uploaded images)
+data/
+uploads/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.uv/
