@@ -15,6 +15,7 @@ so every tool stays user-isolated.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 from datetime import datetime, timedelta
@@ -87,7 +88,25 @@ def _fmt_meal(m: db.Meal) -> str:
     head = f"meal #{m.id} {m.date} {m.meal_type or 'snack'}"
     if m.source == "image":
         head += " (from photo)"
+    if m.portion != 1.0:
+        head += f" (user ate {m.portion:g} of it; quantities shown are their share)"
     return f"{head}: {items} = {kcal:g} kcal"
+
+
+def _scaled(it: db.MealItem, f: float) -> db.MealItem:
+    """The same stored row scaled by f — the row itself when f == 1."""
+    if f == 1.0:
+        return it
+    return db.MealItem(
+        food=it.food,
+        quantity=it.quantity * f,
+        unit=it.unit,
+        calories=it.calories * f,
+        protein=it.protein * f,
+        carbs=it.carbs * f,
+        fat=it.fat * f,
+        notes=it.notes,
+    )
 
 
 def _totals_line(conn: sqlite3.Connection, user_id: str, date: str, tz: ZoneInfo) -> str:
@@ -178,7 +197,9 @@ def build_tools(
         desc = description.strip() or " + ".join(i.food for i in resolved)
         if share != 1.0 and "portion" not in desc:
             desc = f"{desc} ({share:g} portion)"
-        mid = db.add_meal(conn, user_id, d, desc, resolved, meal_type=mtype, source=source)
+        mid = db.add_meal(
+            conn, user_id, d, desc, resolved, meal_type=mtype, source=source, portion=share
+        )
         effects.setdefault("logged", []).append(mid)
         effects.setdefault("portions", []).append(share)
         out = [f"Logged meal #{mid} ({d}, {mtype or 'snack'}):"]
@@ -236,7 +257,7 @@ def build_tools(
         for meal in meals:
             new_id = db.add_meal(
                 conn, user_id, d, meal.description, meal.items,
-                meal_type=meal.meal_type, source=source,
+                meal_type=meal.meal_type, source=source, portion=meal.portion,
             )
             copied.append(new_id)
             effects.setdefault("repeated", []).append(new_id)
@@ -252,7 +273,7 @@ def build_tools(
         changes: list[MealChange],
         meal_type: str = "",
         description: str = "",
-        portion: float = 1.0,
+        portion: float | None = None,
     ) -> str:
         """Edit an already-logged meal with SPOT changes — the right tool for
         corrections like 'actually that was 3 rotis not 2' or 'skip the chai'.
@@ -263,11 +284,13 @@ def build_tools(
         changes: one entry per food to change, matched to existing items by
         food name. {"food": "roti", "quantity": 3} updates just the rotis;
         {"food": "chai", "remove": true} removes the chai; a food that is not
-        in the meal yet is ADDED. Give quantity in the food's natural unit.
+        in the meal yet is ADDED. Give quantity in the food's natural unit,
+        for the WHOLE meal (like log_meal) — the meal's share is applied.
         meal_type/description optional overrides.
-        portion: like on log_meal — what fraction of the resulting meal the
-        user ate (e.g. 0.5). Pass item quantities for the WHOLE meal and the
-        share here; it scales every item.
+        portion: the user's share of the WHOLE meal (e.g. 0.5). Omit it to
+        keep the meal's current share. It is absolute, not relative: on a meal
+        logged at 0.5, 'actually I only had a quarter' is portion=0.25 — the
+        tool rescales from the share the meal was logged at.
         """
         meal = db.get_meal(conn, meal_id)
         if meal is None or meal.user_id != user_id:
@@ -275,6 +298,18 @@ def build_tools(
 
         def _same_food(ch: MealChange, it: db.MealItem) -> bool:
             return nutrition.normalize(ch.food) == nutrition.normalize(it.food)
+
+        # Stored rows hold the EATEN share (whole x meal.portion). A new
+        # portion rescales by new/old — never multiplies an already-scaled row.
+        old_share = meal.portion or 1.0
+        new_share = old_share
+        if portion is not None:
+            try:
+                if float(portion) > 0:
+                    new_share = float(portion)
+            except (TypeError, ValueError):
+                pass
+        factor = new_share / old_share
 
         # Spot changes on STORED rows — unchanged items are never re-resolved,
         # so their quantity/unit/macros stay exactly as logged.
@@ -293,65 +328,39 @@ def build_tools(
                 pending.pop(remove_idx)
                 continue
             if match_idx is None:
-                final.append(it)  # untouched — kept byte-identical
+                final.append(_scaled(it, factor))  # untouched — byte-identical if share unchanged
                 continue
             ch = pending.pop(match_idx)
-            new_qty = ch.quantity if ch.quantity is not None else it.quantity
+            whole_qty = ch.quantity if ch.quantity is not None else it.quantity / old_share
             new_unit = (ch.unit or "").strip()
             if new_unit and new_unit != it.unit:
                 # basis change (e.g. grams instead of bowls) -> re-resolve this item
-                requeue.append(nutrition.FoodItem(it.food, new_qty, new_unit, it.notes))
-            elif ch.quantity is None or new_qty == it.quantity:
-                final.append(it)
+                requeue.append(
+                    nutrition.FoodItem(it.food, whole_qty * new_share, new_unit, it.notes)
+                )
+            elif ch.quantity is None or math.isclose(whole_qty * old_share, it.quantity):
+                final.append(_scaled(it, factor))
             elif it.quantity:
                 # same unit, new amount: scale the STORED macros by the ratio
-                factor = new_qty / it.quantity
-                final.append(
-                    db.MealItem(
-                        food=it.food,
-                        quantity=new_qty,
-                        unit=it.unit,
-                        calories=it.calories * factor,
-                        protein=it.protein * factor,
-                        carbs=it.carbs * factor,
-                        fat=it.fat * factor,
-                        notes=it.notes,
-                    )
-                )
+                final.append(_scaled(it, whole_qty * new_share / it.quantity))
             else:
-                requeue.append(nutrition.FoodItem(it.food, new_qty, it.unit, it.notes))
+                requeue.append(
+                    nutrition.FoodItem(it.food, whole_qty * new_share, it.unit, it.notes)
+                )
 
         # unmatched non-remove changes are additions
         for ch in pending:
             if not ch.remove:
-                requeue.append(nutrition.FoodItem(ch.food, ch.quantity or 1.0, ch.unit, None))
+                requeue.append(
+                    nutrition.FoodItem(ch.food, (ch.quantity or 1.0) * new_share, ch.unit, None)
+                )
 
         try:
             resolved_extra = nutrition.resolve_items(conn, requeue, estimator) if requeue else []
         except nutrition.UnitConversionError as e:
             return f"Error: {e} Nothing was changed."
 
-        try:
-            share = float(portion)
-        except (TypeError, ValueError):
-            share = 1.0
-        if share <= 0:
-            share = 1.0
         all_items = final + resolved_extra
-        if share != 1.0:  # portion scales the stored macros of every item
-            all_items = [
-                db.MealItem(
-                    food=i.food,
-                    quantity=i.quantity * share,
-                    unit=i.unit,
-                    calories=i.calories * share,
-                    protein=i.protein * share,
-                    carbs=i.carbs * share,
-                    fat=i.fat * share,
-                    notes=i.notes,
-                )
-                for i in all_items
-            ]
         if not all_items:
             return "Error: the edit would leave the meal empty."
         item_kcal = [r.calories for r in all_items]
@@ -364,9 +373,15 @@ def build_tools(
             )
         mtype = meal_type.strip().lower() if meal_type and meal_type.strip().lower() in _MEAL_TYPES else meal.meal_type
         desc = description.strip() or meal.description
-        db.edit_meal(conn, meal_id, items=all_items, meal_type=mtype, description=desc)
+        if not description.strip() and new_share != old_share:
+            desc = re.sub(r"\s*\([\d.]+ portion\)$", "", desc)
+            if new_share != 1.0:
+                desc = f"{desc} ({new_share:g} portion)"
+        db.edit_meal(
+            conn, meal_id, items=all_items, meal_type=mtype, description=desc, portion=new_share
+        )
         effects.setdefault("edited", []).append(meal_id)
-        effects.setdefault("portions", []).append(share)
+        effects.setdefault("portions", []).append(new_share)
         out = [f"Updated meal #{meal_id} ({meal.date}):"]
         for r in all_items:
             out.append(f"- {_fmt_item(r)}")

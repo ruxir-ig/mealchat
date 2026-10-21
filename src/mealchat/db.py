@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS meals (
   meal_type   TEXT,                         -- breakfast/lunch/dinner/snack
   source      TEXT NOT NULL DEFAULT 'text', -- text | image
   description TEXT NOT NULL,
+  portion     REAL NOT NULL DEFAULT 1,      -- share of the whole meal the user ate
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL,
   deleted_at  TEXT
@@ -126,6 +127,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     """Additive column migrations for DBs created by older versions."""
     _add_column_if_missing(conn, "foods", "grams_per_unit", "REAL")
     _add_column_if_missing(conn, "memories", "data", "TEXT")
+    _add_column_if_missing(conn, "meals", "portion", "REAL NOT NULL DEFAULT 1")
 
 
 def _add_column_if_missing(
@@ -172,6 +174,7 @@ class Meal:
     created_at: str
     updated_at: str
     items: list[MealItem]
+    portion: float = 1.0  # item rows already hold the eaten share (whole x portion)
 
 
 @_locked
@@ -183,13 +186,14 @@ def add_meal(
     items: list[MealItem],
     meal_type: str | None = None,
     source: str = "text",
+    portion: float = 1.0,
 ) -> int:
     now = _now()
     with conn:
         cur = conn.execute(
-            "INSERT INTO meals (user_id, date, meal_type, source, description, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_id, date, meal_type, source, description, now, now),
+            "INSERT INTO meals (user_id, date, meal_type, source, description, portion, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, date, meal_type, source, description, portion, now, now),
         )
         meal_id = int(cur.lastrowid)
         conn.executemany(
@@ -226,6 +230,7 @@ def _row_to_meal(conn: sqlite3.Connection, row: sqlite3.Row) -> Meal:
         description=row["description"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        portion=row["portion"],
         items=[
             MealItem(
                 food=ir["food"],
@@ -281,6 +286,7 @@ def edit_meal(
     items: list[MealItem] | None = None,
     meal_type: str | None = None,
     description: str | None = None,
+    portion: float | None = None,
 ) -> bool:
     """Replace items (nutrition recomputed by caller) and/or metadata."""
     with conn:
@@ -311,6 +317,9 @@ def edit_meal(
         if description is not None:
             sets.append("description = ?")
             params.append(description)
+        if portion is not None:
+            sets.append("portion = ?")
+            params.append(portion)
         params.append(meal_id)
         cur = conn.execute(f"UPDATE meals SET {', '.join(sets)} WHERE id = ?", params)
         return cur.rowcount > 0

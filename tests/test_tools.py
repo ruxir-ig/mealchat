@@ -189,6 +189,53 @@ def test_edit_meal_portion_scales_every_item(toolkit, conn):
     assert db.day_totals(conn, "u1", db.local_today(TZ)).calories == pytest.approx(165)
 
 
+# --- portion is absolute: edits rescale from the share the meal was logged at
+
+
+def _half_meal(ts):
+    """2 rotis + 1 dal (whole 420 kcal), user ate half -> 210 kcal stored."""
+    ts["log_meal"].invoke(
+        {"items": [{"food": "roti", "quantity": 2}, {"food": "dal", "quantity": 1}], "portion": 0.5}
+    )
+
+
+def test_edit_portion_rescales_from_logged_share(toolkit, conn):
+    """Reviewer repro: logged at 0.5, corrected to 0.25 must be a quarter of
+    the whole meal (105), not a quarter of the half (52.5)."""
+    ts, _ = toolkit
+    _half_meal(ts)
+    ts["edit_meal"].invoke({"meal_id": 1, "changes": [], "portion": 0.25})
+    assert db.day_totals(conn, "u1", db.local_today(TZ)).calories == pytest.approx(105)
+    meal = db.get_meal(conn, 1)
+    assert meal.portion == pytest.approx(0.25)
+    assert "(0.25 portion)" in meal.description and "0.5 portion" not in meal.description
+
+    ts["edit_meal"].invoke({"meal_id": 1, "changes": [], "portion": 1.0})  # "I ate all of it"
+    assert db.day_totals(conn, "u1", db.local_today(TZ)).calories == pytest.approx(420)
+
+
+def test_edit_without_portion_keeps_share_for_whole_meal_quantities(toolkit, conn):
+    """Change quantities are whole-meal: 'there were 4 rotis' on a half meal
+    means 2 eaten. Omitting portion keeps 0.5; the dal row is untouched."""
+    ts, _ = toolkit
+    _half_meal(ts)
+    dal_before = next(i for i in db.get_meal(conn, 1).items if i.food == "dal")
+    ts["edit_meal"].invoke({"meal_id": 1, "changes": [{"food": "roti", "quantity": 4}]})
+    meal = db.get_meal(conn, 1)
+    items = {i.food: i for i in meal.items}
+    assert items["roti"].quantity == pytest.approx(2)
+    assert items["dal"] == dal_before
+    assert meal.portion == pytest.approx(0.5)
+    assert db.day_totals(conn, "u1", db.local_today(TZ)).calories == pytest.approx(330)
+
+
+def test_repeat_meals_keeps_portion(toolkit, conn):
+    ts, _ = toolkit
+    _half_meal(ts)
+    ts["repeat_meals"].invoke({"meal_ids": [1]})
+    assert db.get_meal(conn, 2).portion == pytest.approx(0.5)
+
+
 def test_delete_meal(toolkit, conn):
     ts, effects = toolkit
     ts["log_meal"].invoke({"items": [{"food": "chai", "quantity": 1}]})
@@ -438,6 +485,27 @@ def test_memories_data_column_migrates(tmp_path):
     cols = {r[1] for r in c.execute("PRAGMA table_info(memories)")}
     assert "data" in cols
     assert db.get_memories(c, "u")[0].content == "x"  # old rows intact
+    c.close()
+
+
+def test_meals_portion_column_migrates(tmp_path):
+    c = db.connect(tmp_path / "old.db")
+    # simulate a DB created before meals.portion existed
+    c.executescript(
+        """
+        CREATE TABLE meals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
+          date TEXT NOT NULL, meal_type TEXT, source TEXT NOT NULL DEFAULT 'text',
+          description TEXT NOT NULL, created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL, deleted_at TEXT
+        );
+        INSERT INTO meals (user_id, date, description, created_at, updated_at)
+          VALUES ('u', '2026-10-21', 'old meal', 't', 't');
+        """
+    )
+    c.commit()
+    db.init_db(c)
+    assert db.get_meals(c, "u")[0].portion == 1.0  # old rows default to a full meal
     c.close()
 
 
