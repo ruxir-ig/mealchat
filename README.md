@@ -195,13 +195,13 @@ Real durations from the git timestamps:
 |---|---|---|
 | 19:17–20:12 | initial build — model probing, persistence + nutrition layers, agent core, evals to green, CLI/web UI, bench, video, README | ~55 min |
 | 22:11–22:24 | review round 1 — public OpenAI defaults, calorie-sign bug, async vision, forget tool, web isolation, README honesty | ~13 min |
-| 22:36–23:22+ | review round 2 (this one) — unit conversions + sanity guard, fail-safe vision, spot-change edit semantics, keyed/structured memory + repeat_meals, 3h history window, memory evals, delete/grazing evals + --repeat, prompt caching, vision timeout, caption-to-vision, LangSmith wiring, realistic benchmark, video render fixes | ~50 min |
+| 22:36–23:35 | review round 2 (this one) — unit conversions + sanity guard, fail-safe vision, spot-change edit semantics, keyed/structured memory + repeat_meals, 3h history window, memory evals, delete/grazing evals + --repeat, prompt caching, vision timeout, caption-to-vision, LangSmith wiring, realistic benchmark, video render fixes | ~59 min |
 
 ## What I'd fix or build next
 
 1. **Streaming replies** — the single biggest felt-latency win; the graph already emits per-token events, the UI just doesn't consume them.
 2. **Instant photo ack** — queue the vision work, reply "looking at your plate…" immediately, follow with the log (see "Where I disagree with the spec").
-3. **Per-user timezone + meal-time inference** from local clock.
+3. **Per-user timezone** — one global `MEALCHAT_TIMEZONE` today; meal-type inference from the local clock is already in (8885fd8).
 4. **Memory expiry/decay** — `note`-kind memories older than N days drop out of the block.
 5. **Better correction UX** — edit conflicts ("2 rotis at lunch AND dinner — which?") could offer the last-meal default with a one-tap confirm.
 6. **A real nutrition source** behind the same `resolve_items` seam (USDA/FatSecret), keeping the builtin table as the fast path.
