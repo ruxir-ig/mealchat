@@ -5,6 +5,7 @@ by default. reasoning_effort must be opt-in (most models reject it)."""
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 from mealchat import models
 from mealchat.config import load_settings
@@ -24,10 +25,15 @@ def test_defaults_are_standard_public_models(monkeypatch, tmp_path):
     assert s.text_reasoning == "" and s.vision_reasoning == ""
 
 
-def test_vision_time_budget_is_bounded():
+def test_vision_time_budget_is_bounded(monkeypatch, tmp_path):
     """The vision client gets a short hard timeout and zero retries — a slow
     vision model must fall back to the uncertain/ask path, not stall."""
-    s = load_settings()
+    monkeypatch.chdir(tmp_path)  # no .env present — must pass on a clean clone
+    for k in list(os.environ):
+        if k.startswith("MEALCHAT_"):
+            monkeypatch.delenv(k)
+    # the client constructor needs *a* key, not a real one — nothing is called
+    s = replace(load_settings(), api_key="test-key", vision_api_key="test-key")
     assert s.vision_timeout == 20.0
     vlm = models.vision_llm(s)
     assert vlm.max_retries == 0
