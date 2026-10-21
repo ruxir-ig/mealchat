@@ -20,7 +20,6 @@ from __future__ import annotations
 import sys
 from dataclasses import replace
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from mealchat import db
 from mealchat.agent import MealChatAgent
@@ -36,8 +35,8 @@ def pct(xs: list[float], p: float) -> float:
     return xs[min(len(xs) - 1, int(p * len(xs) + 0.999999) - 1)]
 
 
-def seed_meal(conn, user_id):
-    today = db.local_today(ZoneInfo("Asia/Kolkata"))
+def seed_meal(conn, user_id, tz):
+    today = db.local_today(tz)
     db.add_meal(
         conn, user_id, today, "2 rotis",
         [db.MealItem("roti", 2, "medium roti", 240, 6, 36, 3)],
@@ -75,7 +74,7 @@ def main() -> None:
         for i in range(n):
             uid = f"bench_{name}_{i}"
             if seed:
-                seed_meal(agent.conn, uid)
+                seed_meal(agent.conn, uid, settings.tz)
             r = agent.handle(uid, text, image_path=photo)
             lats.append(r.latency_ms / 1000)
             if photo:

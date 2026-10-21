@@ -15,6 +15,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from mealchat import db
+from mealchat.config import load_settings
+
+# same timezone the agent uses, whatever it's configured to
+TZ = load_settings().tz
 
 THALI = "fixtures/photos/Indian_thali.jpg"  # multi-bowl thali (used for the caption case)
 PLATE = "fixtures/photos/Chapati.jpg"  # clean single plate of rotis
@@ -43,7 +47,7 @@ def _items(conn, user_id):
 
 
 def _totals(conn, user_id):
-    return db.day_totals(conn, user_id, db.local_today(__import__("zoneinfo").ZoneInfo("Asia/Kolkata")))
+    return db.day_totals(conn, user_id, db.local_today(TZ))
 
 
 CASES: list[EvalCase] = []
@@ -157,9 +161,8 @@ CASES.append(
 
 def seed_same_as_yesterday(conn, user_id):
     from datetime import datetime, timedelta
-    from zoneinfo import ZoneInfo
 
-    tz = ZoneInfo("Asia/Kolkata")
+    tz = TZ
     yday = (datetime.now(tz) - timedelta(days=1)).strftime("%Y-%m-%d")
     db.add_meal(
         conn, user_id, yday, "2 rotis and dal",
@@ -177,9 +180,8 @@ def seed_same_as_yesterday(conn, user_id):
 def check_same_as_yesterday(conn, user_id, replies):
     fails = []
     from datetime import datetime, timedelta
-    from zoneinfo import ZoneInfo
 
-    tz = ZoneInfo("Asia/Kolkata")
+    tz = TZ
     today = datetime.now(tz).strftime("%Y-%m-%d")
     yday = (datetime.now(tz) - timedelta(days=1)).strftime("%Y-%m-%d")
     today_meals = db.get_meals(conn, user_id, date=today, limit=50)
@@ -240,9 +242,8 @@ CASES.append(
 def seed_usual_pattern(conn, user_id):
     """Two days of the same breakfast — a real pattern, not n=1."""
     from datetime import datetime, timedelta
-    from zoneinfo import ZoneInfo
 
-    tz = ZoneInfo("Asia/Kolkata")
+    tz = TZ
     for days_ago in (2, 1):
         d = (datetime.now(tz) - timedelta(days=days_ago)).strftime("%Y-%m-%d")
         db.add_meal(
