@@ -15,6 +15,16 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+try:  # nests under the turn's trace when tracing is enabled
+    from langsmith import traceable as _ls_traceable
+except ImportError:  # pragma: no cover
+
+    def _ls_traceable(name=None):  # fallback keeps keyword-call sites uniform
+        def deco(fn):
+            return fn
+
+        return deco
+
 from langchain_core.language_models.chat_models import BaseChatModel
 from PIL import Image, ImageOps
 
@@ -116,6 +126,7 @@ def _parse_json(text: str) -> dict | None:
         return None
 
 
+@_ls_traceable(name="mealchat.vision")
 async def analyze_photo(
     llm: BaseChatModel,
     image_path: str | Path,

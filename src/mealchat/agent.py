@@ -23,8 +23,23 @@ from datetime import datetime, timedelta
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
+try:  # tracing is optional — the agent must work with it absent
+    from langsmith import get_current_run_tree, traceable
+
+    _HAS_LANGSMITH = True
+except ImportError:  # pragma: no cover - langsmith ships with langchain-core
+    _HAS_LANGSMITH = False
+
 from mealchat import db, memory, models, tools, vision
 from mealchat.config import Settings, load_settings
+
+
+def _traceable(name: str):
+    """No-op unless langsmith is importable; even then the decorator records
+    nothing unless LANGSMITH_TRACING is enabled with a key."""
+    if _HAS_LANGSMITH:
+        return traceable(name=name)
+    return lambda fn: fn
 
 _SYSTEM_TEMPLATE = """You are CalorAI's meal-logging assistant chatting over WhatsApp. Users text what they ate ("had 2 parathas and chai for breakfast"), send photos of their plates, make corrections, and ask about their day. You log meals, keep the day's calorie and macro totals accurate, and remember what matters about the user. You are a texting buddy with a nutrition database — warm, quick, never a form.
 
@@ -152,10 +167,20 @@ class MealChatAgent:
         )
         return fut.result(timeout=180)
 
+    @_traceable("mealchat.handle")
     async def _handle(
         self, user_id: str, text: str, image_path: str | None = None
     ) -> AgentResult:
         t0 = time.perf_counter()
+        if _HAS_LANGSMITH:  # attach dynamic metadata; never break the turn
+            try:
+                run = get_current_run_tree()
+                if run is not None:
+                    run.metadata.update(
+                        {"user_id": user_id, "path": "photo" if image_path else "text"}
+                    )
+            except Exception:  # noqa: BLE001, S110 — tracing must never take the turn down
+                pass
         result = AgentResult(reply="")
         vis = None
         if image_path:

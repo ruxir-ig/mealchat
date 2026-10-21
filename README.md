@@ -23,7 +23,7 @@ Built as the CalorAI AI-Engineer test task. Python, LangGraph, SQLite, two delib
 
 All six core features are implemented and covered by a 13-case eval suite (all passing on the final state) plus 28 unit tests. What is **not** done:
 
-- **LangSmith tracing** — not wired (no key). The agent emits per-turn latency / vision / tool-call effects in `AgentResult`, which is where the numbers below come from.
+- **LangSmith tracing** — wired but off: no key exists in this environment, so **no public trace link is included**. With `LANGSMITH_TRACING=true` + `LANGSMITH_API_KEY` set in `.env`, one user turn becomes one trace with the vision call and the agent graph nested under it, tagged with `user_id` and the path (text/photo). With the vars unset (the default), tracing is fully off and costs nothing — verified by running the evals with tracing disabled.
 - **Streaming** — not implemented; `handle()` returns a complete turn.
 - Vision-model latency on the tested gateway is the weak point — see the latency section for what I tried and what I'd do with budget.
 - Nutrition data is a hardcoded Indian-first table + cached model estimates — by design (the task says nutrition accuracy is not the point; the tradeoff is documented below).
