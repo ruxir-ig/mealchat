@@ -276,15 +276,17 @@ def seed_usual_pattern(conn, user_id):
 
 def check_usual_learned(conn, user_id, replies):
     fails = []
-    meals = _meals(conn, user_id)
-    if not meals:
-        return ["no meal logged for 'my usual'"]
-    today_items = {i.food.lower() for i in meals[0].items}
-    if not {"paratha", "chai"} <= today_items:
-        fails.append(f"'my usual' should repeat the 2-day breakfast pattern (paratha+chai), got {today_items}")
-    mems = db.get_memories(conn, user_id)
-    if not any(m.kind == "usual" for m in mems):
-        fails.append("expected a 'usual' memory saved once the pattern was used")
+    # only TODAY's meals count — the seeded pattern days must not satisfy this
+    today_meals = db.get_meals(conn, user_id, date=db.local_today(TZ), limit=50)
+    if len(today_meals) != 1:
+        return [f"'my usual' should log exactly 1 meal today, got {len(today_meals)}"]
+    items = {i.food.lower(): i.quantity for i in today_meals[0].items}
+    if items != {"paratha": 2, "chai": 1}:
+        fails.append(f"'my usual' should repeat the 2-day breakfast (paratha x2 + chai x1), got {items}")
+    usuals = [m for m in db.get_memories(conn, user_id) if m.kind == "usual"]
+    saved = {str(i.get("food", "")).lower() for m in usuals for i in db.parse_memory_data(m)}
+    if not {"paratha", "chai"} <= saved:
+        fails.append(f"expected a STRUCTURED usual (items paratha + chai) saved, got {[m.content for m in usuals]}")
     return fails
 
 
@@ -404,6 +406,20 @@ CASES.append(
 )
 
 
+def _share_error(logged_qty: float, vision_item: dict, share: float = 0.5) -> str | None:
+    """Symmetric check that a logged quantity is `share` of what the vision
+    model saw: off by more than 15% either way fails — so a double-halved
+    item (0.25 of the whole) fails just like an unhalved one."""
+    whole = float(vision_item.get("quantity", 1))
+    expect = whole * share
+    if abs(logged_qty - expect) > max(0.06, 0.15 * expect):
+        return (
+            f"x{logged_qty:g} should be ~{expect:g} ({share:g} of vision's"
+            f" {vision_item.get('food')} x{whole:g})"
+        )
+    return None
+
+
 def _fuzzy_vision_match(logged_food: str, vis_items: list[dict]):
     """Best-matching vision item by token overlap, or None."""
     best, best_score = None, 0.0
@@ -435,17 +451,9 @@ def check_photo_caption_one_meal(conn, user_id, replies):
         vm = _fuzzy_vision_match(li.food, vis.items)
         if vm is None:
             continue  # item the vision didn't name distinctly; skip
-        expect = float(vm.get("quantity", 1)) * 0.5
-        if li.quantity > expect + 0.06:
-            fails.append(
-                f"'half was brother's' not applied: {li.food} x{li.quantity:g} "
-                f"(vision saw {vm.get('food')} x{float(vm.get('quantity', 1)):g} -> expected ~{expect:g})"
-            )
-        elif li.quantity < expect - 0.35:
-            fails.append(
-                f"{li.food} x{li.quantity:g} looks double-halved (vision {vm.get('food')} "
-                f"x{float(vm.get('quantity', 1)):g} -> expected ~{expect:g})"
-            )
+        err = _share_error(li.quantity, vm)
+        if err:
+            fails.append(f"'half was brother's' wrong for {li.food}: {err}")
     return fails
 
 
@@ -489,12 +497,9 @@ def check_photo_then_caption(conn, user_id, replies):
         vm = _fuzzy_vision_match(li.food, vis.items)
         if vm is None:
             continue
-        expect = float(vm.get("quantity", 1)) * 0.5
-        if li.quantity > expect + 0.06 or li.quantity < expect - 0.35:
-            fails.append(
-                f"{li.food} x{li.quantity:g} should be ~{expect:g} (half of vision's"
-                f" {vm.get('food')} x{float(vm.get('quantity', 1)):g})"
-            )
+        err = _share_error(li.quantity, vm)
+        if err:
+            fails.append(f"{li.food} {err}")
     return fails
 
 
