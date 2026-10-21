@@ -46,15 +46,20 @@ class Settings:
 
 def load_settings() -> Settings:
     _load_dotenv()
+    # Defaults are plain public OpenAI models so a fresh clone runs with just an
+    # OpenAI key. Any OpenAI-compatible gateway (Fireworks, Together, vLLM, …)
+    # works by overriding these in .env.
+    api_base = os.environ.get("MEALCHAT_API_BASE", "https://api.openai.com/v1")
     return Settings(
-        api_base=os.environ.get("MEALCHAT_API_BASE", "https://code.in2peta.com/v1"),
+        api_base=api_base,
         api_key=os.environ.get("MEALCHAT_API_KEY", ""),
-        text_model=os.environ.get("MEALCHAT_TEXT_MODEL", "deepseek-v4p1-flash"),
-        text_reasoning=os.environ.get("MEALCHAT_TEXT_REASONING", "low"),
-        vision_model=os.environ.get("MEALCHAT_VISION_MODEL", "glm-5.3-flash"),
-        vision_reasoning=os.environ.get("MEALCHAT_VISION_REASONING", "low"),
-        vision_api_base=os.environ.get("MEALCHAT_VISION_API_BASE", "")
-        or os.environ.get("MEALCHAT_API_BASE", "https://code.in2peta.com/v1"),
+        text_model=os.environ.get("MEALCHAT_TEXT_MODEL", "gpt-4o-mini"),
+        # reasoning_effort is gateway-specific (e.g. some chat-completions
+        # models reject it) — only sent when explicitly set.
+        text_reasoning=os.environ.get("MEALCHAT_TEXT_REASONING", ""),
+        vision_model=os.environ.get("MEALCHAT_VISION_MODEL", "gpt-4o"),
+        vision_reasoning=os.environ.get("MEALCHAT_VISION_REASONING", ""),
+        vision_api_base=os.environ.get("MEALCHAT_VISION_API_BASE", "") or api_base,
         vision_api_key=os.environ.get("MEALCHAT_VISION_API_KEY", "")
         or os.environ.get("MEALCHAT_API_KEY", ""),
         timezone=os.environ.get("MEALCHAT_TIMEZONE", "Asia/Kolkata"),

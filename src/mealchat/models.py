@@ -21,6 +21,12 @@ from langchain_openai import ChatOpenAI
 from mealchat.config import Settings
 
 
+def _extra_body(reasoning: str) -> dict | None:
+    """Only send reasoning_effort when configured — many chat-completions
+    models (including plain OpenAI ones) reject unknown body params."""
+    return {"reasoning_effort": reasoning} if reasoning else None
+
+
 def text_llm(s: Settings, temperature: float = 0.2) -> BaseChatModel:
     return ChatOpenAI(
         model=s.text_model,
@@ -29,7 +35,7 @@ def text_llm(s: Settings, temperature: float = 0.2) -> BaseChatModel:
         temperature=temperature,
         timeout=90,
         max_retries=1,
-        extra_body={"reasoning_effort": s.text_reasoning} if s.text_reasoning else None,
+        extra_body=_extra_body(s.text_reasoning),
     )
 
 
@@ -41,7 +47,7 @@ def vision_llm(s: Settings, temperature: float = 0.1) -> BaseChatModel:
         temperature=temperature,
         timeout=120,
         max_retries=1,
-        extra_body={"reasoning_effort": s.vision_reasoning} if s.vision_reasoning else None,
+        extra_body=_extra_body(s.vision_reasoning),
     )
 
 
