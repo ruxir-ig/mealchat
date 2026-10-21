@@ -118,8 +118,8 @@ def test_forget_memory_removes_without_touching_others(toolkit, conn):
     ts["save_memory"].invoke(
         {"kind": "target", "content": "2000 kcal daily", "key": "calories", "value": 2000}
     )
-    out = ts["forget_memory"].invoke({"search": "calories"})
-    assert "calories" in out
+    out = ts["forget_memory"].invoke({"search": "calories"})  # matches by key, not content
+    assert "2000" in out
     assert all(m.key != "calories" for m in db.get_memories(conn, "u1"))
 
 
