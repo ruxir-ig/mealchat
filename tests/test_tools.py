@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from mealchat import db, memory
+from mealchat import db, memory, nutrition
 from mealchat.tools import build_tools
 
 TZ = ZoneInfo("Asia/Kolkata")
@@ -49,20 +49,93 @@ def test_get_meals_food_filter(toolkit):
     assert "meal #2" not in out  # most recent roti meal is #1
 
 
-def test_edit_meal_spot_change_keeps_unmentioned_items(toolkit, conn):
-    """The 'actually 3 rotis not 2' case: the chai must survive the edit."""
+def test_grams_embedded_number_multiplies_quantity(conn):
+    """{paneer, 2, '100 g'} is 2 x 100 g = 200 g — the embedded number used to
+    swallow the quantity (logged 1 x 100 g = 265 instead of 530)."""
+    items = nutrition.resolve_items(
+        conn, [nutrition.FoodItem("paneer", quantity=2, unit="100 g")]
+    )
+    assert items[0].quantity == pytest.approx(2)
+    assert items[0].calories == pytest.approx(530, abs=2)
+
+    items = nutrition.resolve_items(
+        conn, [nutrition.FoodItem("chicken breast", quantity=2, unit="150 g")]
+    )
+    assert items[0].quantity == pytest.approx(3)  # 300 g = 3 x 100 g
+    assert items[0].calories == pytest.approx(495, abs=2)
+
+
+# --- edit_meal must not touch unmentioned items (urgent correction) --------
+
+
+def test_edit_meal_spot_change_keeps_other_items(toolkit, conn):
+    """The classic 'actually 3 rotis not 2' case: the chai must survive."""
     ts, effects = toolkit
     ts["log_meal"].invoke(
         {"items": [{"food": "roti", "quantity": 2}, {"food": "chai", "quantity": 1}]}
     )
-    assert db.day_totals(conn, "u1", db.local_today(TZ)).calories == pytest.approx(330)
-
     out = ts["edit_meal"].invoke({"meal_id": 1, "changes": [{"food": "roti", "quantity": 3}]})
     assert "Updated meal #1" in out
-    items = db.get_meal(conn, 1).items
-    assert [(i.food, i.quantity) for i in items] == [("roti", 3.0), ("chai", 1.0)]
+    items = {i.food: i.quantity for i in db.get_meal(conn, 1).items}
+    assert items == {"roti": 3.0, "chai": 1.0}
     assert db.day_totals(conn, "u1", db.local_today(TZ)).calories == pytest.approx(450)
     assert effects["edited"] == [1]
+
+
+def test_edit_meal_leaves_unmentioned_items_byte_identical(toolkit, conn):
+    """Reviewer repro: chicken 200 g + 2 rotis; editing the rotis used to
+    re-resolve the chicken and silently halve it (x2 -> x1)."""
+    ts, _ = toolkit
+    ts["log_meal"].invoke(
+        {
+            "items": [
+                {"food": "chicken breast", "quantity": 200, "unit": "g"},
+                {"food": "roti", "quantity": 2},
+            ]
+        }
+    )
+    before = next(i for i in db.get_meal(conn, 1).items if "chicken" in i.food)
+    assert before.quantity == pytest.approx(2)  # 200 g = 2 x 100 g
+    assert before.calories == pytest.approx(330, abs=1)
+
+    ts["edit_meal"].invoke({"meal_id": 1, "changes": [{"food": "roti", "quantity": 3}]})
+
+    after = next(i for i in db.get_meal(conn, 1).items if "chicken" in i.food)
+    assert (after.food, after.quantity, after.unit) == (before.food, before.quantity, before.unit)
+    assert (after.calories, after.protein, after.carbs, after.fat, after.notes) == (
+        before.calories,
+        before.protein,
+        before.carbs,
+        before.fat,
+        before.notes,
+    )  # byte-identical — never re-resolved
+    roti = next(i for i in db.get_meal(conn, 1).items if i.food == "roti")
+    assert roti.quantity == pytest.approx(3)
+    assert roti.calories == pytest.approx(360)
+    t = db.day_totals(conn, "u1", db.local_today(TZ))
+    assert t.calories == pytest.approx(330 + 360, abs=2)
+
+
+def test_edit_meal_quantity_change_scales_stored_macros(toolkit, conn):
+    ts, _ = toolkit
+    ts["log_meal"].invoke({"items": [{"food": "roti", "quantity": 2}, {"food": "chai", "quantity": 1}]})
+    ts["edit_meal"].invoke({"meal_id": 1, "changes": [{"food": "roti", "quantity": 3}]})
+    roti = next(i for i in db.get_meal(conn, 1).items if i.food == "roti")
+    assert roti.calories == pytest.approx(240 * 1.5)  # stored 240 scaled by 3/2
+    assert roti.protein == pytest.approx(3 * 2 * 1.5)  # 6g -> 9g
+    assert roti.carbs == pytest.approx(18 * 2 * 1.5)
+
+
+def test_edit_meal_unit_change_reresolves_that_item(toolkit, conn):
+    ts, _ = toolkit
+    ts["log_meal"].invoke({"items": [{"food": "dal", "quantity": 1}]})  # 1 bowl = 180
+    ts["edit_meal"].invoke(
+        {"meal_id": 1, "changes": [{"food": "dal", "quantity": 600, "unit": "g"}]}
+    )
+    dal = db.get_meal(conn, 1).items[0]
+    assert dal.quantity == pytest.approx(2)  # 600 g = 2 bowls
+    assert dal.calories == pytest.approx(360, abs=1)
+    assert dal.unit == "bowl"  # re-resolved into the food's canonical unit
 
 
 def test_edit_meal_removes_single_item(toolkit, conn):

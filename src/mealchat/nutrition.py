@@ -188,14 +188,18 @@ def lookup_food(conn: sqlite3.Connection, name: str) -> db.Food | None:
 
 
 def _grams(unit: str | None, quantity: float) -> float | None:
-    """'150 g'/'250 ml' -> that number; bare 'g'/'grams'/'ml' -> the item's
-    quantity. None if the unit is not gram/ml."""
+    """Total grams (or ml) the item represents, or None if the unit isn't mass.
+
+    '150 g' -> 150; bare 'g'/'grams'/'ml' -> the item's quantity; a unit that
+    embeds a number MULTIPLIES it — {quantity 2, '100 g'} is 200 g total,
+    i.e. 2 x 100 g, not 1 x 100 g.
+    """
     if not unit:
         return None
     u = unit.lower().strip()
     m = re.search(r"(\d+(?:\.\d+)?)\s*(?:g|gram|grams|ml|mls|milliliters?|millilitres?)\b", u)
     if m:
-        return float(m.group(1))
+        return float(m.group(1)) * quantity
     if u in ("g", "gram", "grams", "ml", "mls", "milliliter", "milliliters", "millilitre", "millilitres"):
         return quantity
     return None

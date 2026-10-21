@@ -270,46 +270,60 @@ def build_tools(
         if meal is None or meal.user_id != user_id:
             return f"Error: meal #{meal_id} not found for this user."
 
-        # match changes to existing items by normalized food name
+        def _same_food(ch: MealChange, it: db.MealItem) -> bool:
+            return nutrition.normalize(ch.food) == nutrition.normalize(it.food)
+
+        # Spot changes on STORED rows — unchanged items are never re-resolved,
+        # so their quantity/unit/macros stay exactly as logged.
         pending: list[MealChange] = list(changes)
-        final: list[nutrition.FoodItem] = []
+        final: list[db.MealItem] = []
+        requeue: list[nutrition.FoodItem] = []  # unit changes / additions -> resolve
+
         for it in meal.items:
-            match_idx = next(
-                (
-                    k
-                    for k, ch in enumerate(pending)
-                    if not ch.remove
-                    and nutrition.normalize(ch.food) == nutrition.normalize(it.food)
-                ),
-                None,
-            )
             remove_idx = next(
-                (
-                    k
-                    for k, ch in enumerate(pending)
-                    if ch.remove and nutrition.normalize(ch.food) == nutrition.normalize(it.food)
-                ),
-                None,
+                (k for k, ch in enumerate(pending) if ch.remove and _same_food(ch, it)), None
+            )
+            match_idx = next(
+                (k for k, ch in enumerate(pending) if not ch.remove and _same_food(ch, it)), None
             )
             if remove_idx is not None:
                 pending.pop(remove_idx)
                 continue
-            if match_idx is not None:
-                ch = pending.pop(match_idx)
+            if match_idx is None:
+                final.append(it)  # untouched — kept byte-identical
+                continue
+            ch = pending.pop(match_idx)
+            new_qty = ch.quantity if ch.quantity is not None else it.quantity
+            new_unit = (ch.unit or "").strip()
+            if new_unit and new_unit != it.unit:
+                # basis change (e.g. grams instead of bowls) -> re-resolve this item
+                requeue.append(nutrition.FoodItem(it.food, new_qty, new_unit, it.notes))
+            elif ch.quantity is None or new_qty == it.quantity:
+                final.append(it)
+            elif it.quantity:
+                # same unit, new amount: scale the STORED macros by the ratio
+                factor = new_qty / it.quantity
                 final.append(
-                    nutrition.FoodItem(
-                        it.food,
-                        ch.quantity if ch.quantity is not None else it.quantity,
-                        ch.unit or it.unit,
-                        it.notes,
+                    db.MealItem(
+                        food=it.food,
+                        quantity=new_qty,
+                        unit=it.unit,
+                        calories=it.calories * factor,
+                        protein=it.protein * factor,
+                        carbs=it.carbs * factor,
+                        fat=it.fat * factor,
+                        notes=it.notes,
                     )
                 )
             else:
-                final.append(nutrition.FoodItem(it.food, it.quantity, it.unit, it.notes))
-        # unmatched changes are additions
+                requeue.append(nutrition.FoodItem(it.food, new_qty, it.unit, it.notes))
+
+        # unmatched non-remove changes are additions
         for ch in pending:
             if not ch.remove:
-                final.append(nutrition.FoodItem(ch.food, ch.quantity or 1.0, ch.unit, None))
+                requeue.append(nutrition.FoodItem(ch.food, ch.quantity or 1.0, ch.unit, None))
+
+        resolved_extra = nutrition.resolve_items(conn, requeue, estimator) if requeue else []
 
         try:
             share = float(portion)
@@ -317,14 +331,24 @@ def build_tools(
             share = 1.0
         if share <= 0:
             share = 1.0
-        resolved = nutrition.resolve_items(
-            conn,
-            [nutrition.FoodItem(f.food, f.quantity * share, f.unit, f.notes) for f in final],
-            estimator,
-        )
-        if not resolved:
+        all_items = final + resolved_extra
+        if share != 1.0:  # portion scales the stored macros of every item
+            all_items = [
+                db.MealItem(
+                    food=i.food,
+                    quantity=i.quantity * share,
+                    unit=i.unit,
+                    calories=i.calories * share,
+                    protein=i.protein * share,
+                    carbs=i.carbs * share,
+                    fat=i.fat * share,
+                    notes=i.notes,
+                )
+                for i in all_items
+            ]
+        if not all_items:
             return "Error: the edit would leave the meal empty."
-        item_kcal = [r.calories for r in resolved]
+        item_kcal = [r.calories for r in all_items]
         if max(item_kcal) > MAX_ITEM_KCAL or sum(item_kcal) > MAX_MEAL_KCAL:
             return (
                 f"Error: the edited meal looks too large to be real (largest item"
@@ -334,11 +358,11 @@ def build_tools(
             )
         mtype = meal_type.strip().lower() if meal_type and meal_type.strip().lower() in _MEAL_TYPES else meal.meal_type
         desc = description.strip() or meal.description
-        db.edit_meal(conn, meal_id, items=resolved, meal_type=mtype, description=desc)
+        db.edit_meal(conn, meal_id, items=all_items, meal_type=mtype, description=desc)
         effects.setdefault("edited", []).append(meal_id)
         effects.setdefault("portions", []).append(share)
         out = [f"Updated meal #{meal_id} ({meal.date}):"]
-        for r in resolved:
+        for r in all_items:
             out.append(f"- {_fmt_item(r)}")
         out.append(_totals_line(conn, user_id, meal.date, tz))
         return "\n".join(out)
