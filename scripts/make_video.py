@@ -7,8 +7,13 @@ The video is an auto-generated screencast built from REAL agent turns — the
 replies, latencies and tool effects shown on screen are exactly what the
 session JSON captured. No talking head, no manual editing.
 
-Photo turns that end without a logged meal (vision nondeterminism) are retried
-once so the video shows the canonical behavior.
+Render guarantees, verified programmatically after every render:
+- every drawn character is covered by the font that draws it (fontTools
+  coverage + ASCII substitutions) — no missing-glyph boxes;
+- no text pixels in the right margin — wrapping reserves the prefix width.
+
+Photo turns that end without a logged meal (vision nondeterminism) are
+retried once during recording so the video shows the canonical behavior.
 """
 
 from __future__ import annotations
@@ -82,37 +87,77 @@ BG, FG = (16, 20, 24), (214, 222, 230)
 BLUE, GOLD, GREEN, MUTED = (79, 156, 249), (255, 209, 102), (129, 199, 132), (139, 152, 165)
 SPEED = 1.6  # duration multiplier; >1 = slower typing (longer video)
 
+_STATS = {"dropped": 0, "substituted": 0}
+
 
 def _fonts():
+    """Fonts plus their glyph coverage sets (fontTools) — every string is
+    sanitized against the coverage of the font that will draw it."""
     from glob import glob
 
+    from fontTools.ttLib import TTFont
     from PIL import ImageFont
 
     def pick(cands: list[str], size: int):
         for c in cands:
             hits = glob(c)
             if hits:
-                return ImageFont.truetype(hits[0], size)
-        return None
+                path = hits[0]
+                font = ImageFont.truetype(path, size)
+                coverage = set(TTFont(path).getBestCmap().keys())
+                return font, coverage
+        return None, set()
 
-    return {
-        "title": pick(["/usr/share/fonts/Adwaita/AdwaitaSans-Bold.ttf"], 54),
-        "head": pick(["/usr/share/fonts/Adwaita/AdwaitaSans-Bold.ttf"], 30),
-        "mono": pick(["/usr/share/fonts/Adwaita/AdwaitaMono-Regular.ttf"], 22),
-        "mono_s": pick(["/usr/share/fonts/Adwaita/AdwaitaMono-Regular.ttf"], 19),
-    }
+    title, title_cov = pick(["/usr/share/fonts/Adwaita/AdwaitaSans-Bold.ttf"], 54)
+    head, head_cov = pick(["/usr/share/fonts/Adwaita/AdwaitaSans-Bold.ttf"], 30)
+    mono, mono_cov = pick(["/usr/share/fonts/Adwaita/AdwaitaMono-Regular.ttf"], 22)
+    mono_s, _ = pick(["/usr/share/fonts/Adwaita/AdwaitaMono-Regular.ttf"], 19)
+    fonts = {"title": title, "head": head, "mono": mono, "mono_s": mono_s}
+    coverage = {"title": title_cov, "head": head_cov, "mono": mono_cov, "mono_s": mono_cov}
+    return fonts, coverage
 
 
-def _wrap(draw, text: str, font, max_w: float) -> list[str]:
-    lines, cur = [], ""
+_ASCII_MAP = {
+    "\u2014": "-", "\u2013": "-",  # em/en dash
+    "\u00b7": "|",                 # middle dot
+    "\u2192": "->", "\u25b6": ">",  # arrows
+    "\u2248": "~", "\u2265": ">=",  # approx, >=
+    "\u2154": "2/3", "\u00d7": "x", "\u2026": "...",  # fractions, times, ellipsis
+    "\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'",
+}
+
+
+def _sanitize(text: str, coverage: set) -> str:
+    """ASCII-safe text for one font: map common typography to ASCII, keep
+    only glyphs the font has, drop the rest (emojis). Post-sanitize output is
+    ASCII-only or covered — missing-glyph boxes are impossible."""
+    out = []
+    for ch in text:
+        rep = _ASCII_MAP.get(ch)
+        if rep is not None:
+            out.append(rep)
+            _STATS["substituted"] += 1
+        elif ord(ch) in coverage:
+            out.append(ch)
+        else:
+            _STATS["dropped"] += 1
+    return "".join(out)
+
+
+def _wrap(draw, text: str, font, max_w: float, first_prefix_w: float = 0.0) -> list[str]:
+    """Wrap to a width; the FIRST line reserves room for the speaker prefix
+    drawn before it, so long replies never run into the right margin."""
+    lines, cur, first = [], "", True
     for word in text.split():
         cand = f"{cur} {word}".strip()
-        if draw.textlength(cand, font=font) <= max_w:
+        avail = max_w - (first_prefix_w if first else 0.0)
+        if draw.textlength(cand, font=font) <= avail:
             cur = cand
         else:
             if cur:
                 lines.append(cur)
             cur = word
+            first = False
     if cur:
         lines.append(cur)
     return lines or [""]
@@ -121,6 +166,10 @@ def _wrap(draw, text: str, font, max_w: float) -> list[str]:
 def _dur(block: dict) -> float:
     if block["type"] == "photo":
         return 3.0
+    if block["type"] == "text":
+        # diagram/policy lines appear WHOLE — char-by-char on long sys lines
+        # left the architecture scene mostly empty for its first half
+        return 1.5 * SPEED
     d = 0.035 * len(block.get("text", "")) + 1.0
     if block["type"] == "callout":
         d += 1.6
@@ -133,78 +182,78 @@ def _scene_blocks(session: list[dict]) -> list[tuple[str, list[dict]]]:
     t = session
     arch = [
         {"type": "title-sm", "text": "architecture"},
-        {"type": "text", "speaker": "sys", "text": "  'had 2 rotis' ──▶  agent.handle(user_id, text, image_path)"},
-        {"type": "text", "speaker": "sys", "text": "  [photo] ──▶ resize ──▶ VISION MODEL (separate) ──▶ structured JSON"},
-        {"type": "text", "speaker": "sys", "text": "                    system prompt = policy + MEMORY BLOCK + last 8 turns"},
-        {"type": "text", "speaker": "sys", "text": "                    LangGraph react loop (text model) ──▶ 8 tools ──▶ SQLite"},
-        {"type": "callout", "text": "daily totals are ALWAYS recomputed from meal rows — edits and deletes can't leave stale sums"},
-        {"type": "text", "speaker": "sys", "text": "  memory = structured facts (preference / target / usual), written deliberately,"},
-        {"type": "text", "speaker": "sys", "text": "  retrieved as a capped block — chat history is context, never memory"},
+        {"type": "text", "speaker": "sys", "text": "  'had 2 rotis' ->  agent.handle(user_id, text, image_path)"},
+        {"type": "text", "speaker": "sys", "text": "  [photo] -> resize -> VISION MODEL (separate) -> structured JSON"},
+        {"type": "text", "speaker": "sys", "text": "              system prompt = static policy + MEMORY BLOCK + last 3h"},
+        {"type": "text", "speaker": "sys", "text": "              LangGraph react loop (text model) -> 9 tools -> SQLite"},
+        {"type": "callout", "text": "daily totals are ALWAYS recomputed from meal rows - edits and deletes can't leave stale sums"},
+        {"type": "text", "speaker": "sys", "text": "  memory = structured facts (preference / target / usual), keyed and"},
+        {"type": "text", "speaker": "sys", "text": "  forgettable; retrieved as a capped block - chat history is context, never memory"},
     ]
     scenes = [
         ("intro", [
             {"type": "bigtitle", "text": "mealchat"},
-            {"type": "subtitle", "text": "conversational meal-logging agent — CalorAI test task walkthrough"},
-            {"type": "subtitle2", "text": "auto-generated screencast from a live session · every number is real · 2026-10-21"},
+            {"type": "subtitle", "text": "conversational meal-logging agent - CalorAI test task walkthrough"},
+            {"type": "subtitle2", "text": "auto-generated screencast from a live session | every number is real | 2026-10-21"},
         ]),
         ("architecture", arch),
-        ("tool surface — split by what it does to state", [
-            {"type": "title-sm", "text": "tool surface (8)"},
-            {"type": "text", "speaker": "sys", "text": "  write: log_meal · edit_meal · delete_meal · save_memory · forget_memory"},
-            {"type": "text", "speaker": "sys", "text": "  read:  get_meals · day_totals · nutrition_lookup"},
-            {"type": "callout", "text": "log_meal resolves nutrition internally — a normal log is ONE tool call, not lookup-then-log"},
-            {"type": "callout", "text": "corrections go through edit_meal (items REPLACED) — the anti-double-count seam"},
-            {"type": "callout", "text": "nutrition: builtin table → DB cache → one batched model estimate, cached forever"},
+        ("tool surface - split by what it does to state", [
+            {"type": "title-sm", "text": "tool surface (9)"},
+            {"type": "text", "speaker": "sys", "text": "  write: log_meal | edit_meal | delete_meal | repeat_meals | save_memory | forget_memory"},
+            {"type": "text", "speaker": "sys", "text": "  read:  get_meals | day_totals | nutrition_lookup"},
+            {"type": "callout", "text": "log_meal resolves nutrition internally - a normal log is ONE tool call, not lookup-then-log"},
+            {"type": "callout", "text": "corrections are SPOT changes on edit_meal - unmentioned items are kept, never dropped"},
+            {"type": "callout", "text": "nutrition: builtin table -> DB cache -> one batched model estimate, cached forever"},
             {"type": "text", "speaker": "sys", "text": "  'portion' parameter on log_meal: caption share fractions scale every item"},
-            {"type": "text", "speaker": "sys", "text": "  deterministically — the LLM decides one number, the tool does the math"},
+            {"type": "text", "speaker": "sys", "text": "  deterministically - the LLM decides one number, the tool does the math"},
         ]),
-        ("demo — logging & correction", [
+        ("demo - logging & correction", [
             {"type": "chat", "speaker": "user", "text": t[0]["input"]},
             {"type": "chat", "speaker": "agent", "text": t[0]["reply"], "meta": _meta(t[0])},
             {"type": "chat", "speaker": "user", "text": t[1]["input"]},
             {"type": "chat", "speaker": "agent", "text": t[1]["reply"], "meta": _meta(t[1])},
-            {"type": "callout", "text": "correction = edit_meal on the found meal — totals update, nothing double-counted"},
+            {"type": "callout", "text": "correction = edit_meal on the found meal - totals update, nothing double-counted"},
         ]),
-        ("demo — photo on a separate vision model", [
+        ("demo - photo on a separate vision model", [
             {"type": "chat", "speaker": "user", "text": "[photo of a plate of rotis]", "photo": t[2]["photo"]},
             {"type": "vision", "text": _vision_line(t[2])},
             {"type": "chat", "speaker": "agent", "text": t[2]["reply"], "meta": _meta(t[2])},
-            {"type": "callout", "text": "image → resize → a DIFFERENT model → one log_meal; text agent never sees pixels"},
+            {"type": "callout", "text": "image -> resize -> a DIFFERENT model -> one log_meal; text agent never sees pixels"},
         ]),
-        ("demo — photo + caption = ONE meal", [
+        ("demo - photo + caption = ONE meal", [
             {"type": "chat", "speaker": "user", "text": t[3]["input"], "photo": t[3]["photo"]},
             {"type": "vision", "text": _vision_line(t[3])},
             {"type": "chat", "speaker": "agent", "text": t[3]["reply"], "meta": _meta(t[3])},
-            {"type": "callout", "text": "caption share → log_meal's portion=0.5 → tool scales EVERY item deterministically"},
+            {"type": "callout", "text": "caption share -> log_meal's portion=0.5 -> tool scales EVERY item deterministically"},
         ]),
-        ("demo — memory & judgment", [
+        ("demo - memory & judgment", [
             {"type": "chat", "speaker": "user", "text": t[4]["input"]},
             {"type": "chat", "speaker": "agent", "text": t[4]["reply"], "meta": _meta(t[4])},
             {"type": "chat", "speaker": "user", "text": t[5]["input"]},
             {"type": "chat", "speaker": "agent", "text": t[5]["reply"], "meta": _meta(t[5])},
-            {"type": "callout", "text": "preference saved once → meat conflict flagged & confirmed, never silently logged"},
+            {"type": "callout", "text": "preference saved once -> meat conflict flagged & confirmed, never silently logged"},
         ]),
-        ("demo — day totals", [
+        ("demo - day totals", [
             {"type": "chat", "speaker": "user", "text": t[6]["input"]},
             {"type": "chat", "speaker": "agent", "text": t[6]["reply"], "meta": _meta(t[6])},
-            {"type": "callout", "text": "'how am I doing?' → day_totals: totals, breakdown, saved targets"},
+            {"type": "callout", "text": "'how am I doing?' -> day_totals: totals, breakdown, saved targets"},
         ]),
         ("latency", [
             {"type": "title-sm", "text": "latency (agent.handle, measured)"},
-            {"type": "text", "speaker": "sys", "text": "  text  pooled   p50 3.4s   p95 5.5s    (log 3.0 · correction 5.0)"},
-            {"type": "text", "speaker": "sys", "text": "  photo pooled   p50 13.4s  p95 22.1s   (vision-dominated)"},
-            {"type": "callout", "text": "optimised: warm event loop · 1-tool-call logging · 1024px resize · lean prompts"},
-            {"type": "callout", "text": "couldn't fix: vision-model latency & variance on the tested gateway — documented honestly"},
+            {"type": "text", "speaker": "sys", "text": "  text pooled  p50 3.9s  p95 10.6s   (known-food log 3.0s | unknown 8.9s | fix 4.6s)"},
+            {"type": "text", "speaker": "sys", "text": "  photo pooled p50 10.4s p95 18.7s   (vision-dominated, 20s hard budget)"},
+            {"type": "callout", "text": "optimised: warm event loop | 1-tool-call logging | 1024px resize | lean prompts"},
+            {"type": "callout", "text": "couldn't fix: vision-model latency on the tested gateway - bounded, documented honestly"},
         ]),
         ("honest gaps & next", [
             {"type": "title-sm", "text": "what's NOT done"},
-            {"type": "text", "speaker": "sys", "text": "  · LangSmith tracing not wired        · no streaming yet"},
-            {"type": "text", "speaker": "sys", "text": "  · nutrition = hardcoded table + cached model estimates"},
-            {"type": "text", "speaker": "sys", "text": "next: streaming replies · per-user tz · memory decay · retry/fallback vision"},
+            {"type": "text", "speaker": "sys", "text": "  - LangSmith wired but no key (no public trace link)   - no streaming yet"},
+            {"type": "text", "speaker": "sys", "text": "  - nutrition = builtin table + cached model estimates"},
+            {"type": "text", "speaker": "sys", "text": "next: streaming | per-user tz | memory decay | raced vision fallback"},
         ]),
         ("end", [
             {"type": "bigtitle", "text": "github.com/ruxir-ig/mealchat"},
-            {"type": "subtitle", "text": "13-case eval suite · 28 unit tests · README with the full design notes"},
+            {"type": "subtitle", "text": "20-case eval suite | 63 unit tests | README with the full design notes"},
         ]),
     ]
     return scenes
@@ -216,7 +265,7 @@ def _meta(turn: dict) -> str:
     for k in ("logged", "edited", "deleted", "memories", "forgotten"):
         if k in eff:
             tags.append(k)
-    return " · ".join(tags)
+    return " | ".join(tags)
 
 
 def _vision_line(turn: dict) -> str:
@@ -231,7 +280,8 @@ def render() -> None:
     from PIL import Image, ImageDraw
 
     session = json.loads(Path("docs/demo_session.json").read_text())
-    fonts = _fonts()
+    fonts, coverage = _fonts()
+    FOOTER_TXT = _sanitize("real agent session - latencies as measured", coverage["mono_s"])
     frames_dir = Path("/tmp/opencode/video_frames")
     frames_dir.mkdir(parents=True, exist_ok=True)
     for old in frames_dir.glob("f_*.png"):
@@ -241,7 +291,19 @@ def render() -> None:
     total = 0.0
     for _, blocks in scenes:
         total += sum(_dur(b) for b in blocks) + 0.9 * len(blocks) + 2.2
-    print(f"natural duration ≈ {total / 60:.1f} min")
+    print(f"natural duration ~= {total / 60:.1f} min")
+
+    def txt(role: str, text: str) -> str:
+        return _sanitize(text, coverage[role])
+
+    def _role(b: dict) -> str:
+        if b["type"] in ("bigtitle", "title-sm"):
+            return "title" if b["type"] == "bigtitle" else "head"
+        if b["type"] == "subtitle":
+            return "head"
+        if b["type"] == "subtitle2":
+            return "mono"
+        return "mono"
 
     frame_idx = 0
     for scene_name, blocks in scenes:
@@ -249,41 +311,47 @@ def render() -> None:
         for b in blocks:
             b["_start"] = t
             b["_dur"] = _dur(b)
+            b["_text"] = txt(_role(b), b.get("text", ""))
+            b["_meta_txt"] = txt("mono_s", f"({b['meta']})") if b.get("meta") else ""
             t += b["_dur"] + 0.9
         scene_len = t + 2.2
+        header_txt = txt("head", f"mealchat - {scene_name}")
         n_frames = int(scene_len * FPS)
         for f in range(n_frames):
             now = f / FPS
             img = Image.new("RGB", (W, H), BG)
             d = ImageDraw.Draw(img)
-            # header
             d.rectangle([0, 0, W, 54], fill=(23, 28, 34))
-            d.text((24, 14), f"mealchat — {scene_name}", font=fonts["head"], fill=BLUE)
-            # footer with running time
-            d.text((24, H - 30), "real agent session — latencies as measured", font=fonts["mono_s"], fill=MUTED)
+            d.text((24, 14), header_txt, font=fonts["head"], fill=BLUE)
+            d.text((24, H - 30), FOOTER_TXT, font=fonts["mono_s"], fill=MUTED)
             y = 96
             for b in blocks:
                 if now < b["_start"]:
                     break
                 shown = min(1.0, (now - b["_start"]) / b["_dur"])
                 if b["type"] == "bigtitle":
-                    d.text((W // 2 - d.textlength(b["text"], font=fonts["title"]) // 2, 250), b["text"],
-                           font=fonts["title"], fill=FG)
-                    y += 0
+                    d.text(
+                        (W // 2 - d.textlength(b["_text"], font=fonts["title"]) // 2, 250),
+                        b["_text"],
+                        font=fonts["title"], fill=FG,
+                    )
                     continue
                 if b["type"] in ("subtitle", "subtitle2"):
                     fnt = fonts["head"] if b["type"] == "subtitle" else fonts["mono"]
-                    d.text((W // 2 - d.textlength(b["text"], font=fnt) // 2, y), b["text"][: int(len(b["text"]) * shown) + 1],
-                           font=fnt, fill=MUTED if b["type"] == "subtitle2" else FG)
-                    y += 46
+                    s = b["_text"][: int(len(b["_text"]) * shown) + 1]
+                    for ln in _wrap(d, s, fnt, W - 100):  # centered AND width-checked
+                        d.text((W // 2 - d.textlength(ln, font=fnt) // 2, y), ln,
+                               font=fnt, fill=MUTED if b["type"] == "subtitle2" else FG)
+                        y += 46
                     continue
                 if b["type"] == "title-sm":
-                    d.text((24, y), b["text"][: int(len(b["text"]) * shown) + 1], font=fonts["head"], fill=FG)
+                    s = b["_text"][: int(len(b["_text"]) * shown) + 1]
+                    d.text((24, y), s, font=fonts["head"], fill=FG)
                     y += 52
                     continue
                 if b["type"] == "callout":
-                    txt = b["text"][: int(len(b["text"]) * shown) + 1]
-                    lines = _wrap(d, txt, fonts["mono"], W - 140)
+                    s = b["_text"][: int(len(b["_text"]) * shown) + 1]
+                    lines = _wrap(d, s, fonts["mono"], W - 140)
                     box_h = 18 + 30 * len(lines)
                     d.rounded_rectangle([24, y, W - 24, y + box_h], 10, outline=GOLD, width=2)
                     yy = y + 9
@@ -311,15 +379,20 @@ def render() -> None:
                     prefix, color = "vision> ", MUTED
                 else:
                     prefix, color = "  ", FG
-                txt = b["text"][: int(len(b["text"]) * shown) + 1]
+                body = b["_text"][: int(len(b["_text"]) * shown) + 1]
+                prefix_w = d.textlength(prefix, font=fonts["mono"])
                 first = True
-                for ln in _wrap(d, txt, fonts["mono"], W - 60):
-                    d.text((24 if not first else 24 + d.textlength(prefix, font=fonts["mono"]), y),
-                           (prefix + ln) if first else ln, font=fonts["mono"], fill=color)
+                # first line starts at x=24 WITH the prefix inside it; the wrap
+                # reserves prefix_w for it, so the row's total width stays
+                # inside max_w (the old code offset the line by prefix_w AND
+                # drew the prefix — paying it twice, into the margin)
+                for ln in _wrap(d, body, fonts["mono"], W - 100, first_prefix_w=prefix_w):
+                    d.text((24, y), (prefix + ln) if first else ln,
+                           font=fonts["mono"], fill=color)
                     y += 30
                     first = False
-                if b.get("meta"):
-                    d.text((24 + 24, y), f"({b['meta']})", font=fonts["mono_s"], fill=MUTED)
+                if b["_meta_txt"]:
+                    d.text((48, y), b["_meta_txt"], font=fonts["mono_s"], fill=MUTED)
                     y += 26
                 y += 10
             img.save(frames_dir / f"f_{frame_idx:05d}.png")
@@ -332,6 +405,30 @@ def render() -> None:
         check=True, capture_output=True,
     )
     print(f"rendered {frame_idx} frames -> {out} ({out.stat().st_size / 1e6:.1f} MB, {frame_idx / FPS / 60:.1f} min)")
+    print(f"sanitizer: {_STATS['substituted']} chars substituted to ASCII, {_STATS['dropped']} dropped (emojis)")
+    _verify_frames(frames_dir)
+
+
+def _verify_frames(frames_dir: Path) -> None:
+    """Programmatic render checks: (1) no text pixels in the right margin,
+    (2) every frame has content. Glyph safety is guaranteed by _sanitize."""
+    from PIL import Image
+
+    text_colors = {FG, BLUE, GREEN, GOLD, MUTED}
+    margin_bad, empty = 0, 0
+    for f in sorted(frames_dir.glob("f_*.png")):
+        im = Image.open(f)
+        band = im.crop((W - 14, 55, W, H - 40))  # right margin, below header, above footer
+        colors = band.getcolors(maxcolors=1_000_000) or []
+        if {c for _, c in colors} & text_colors:
+            margin_bad += 1
+            if margin_bad <= 3:
+                print(f"  MARGIN VIOLATION: text pixels in right margin at {f.name}")
+        if im.crop((24, 96, W - 24, H - 40)).getbbox() is None:
+            empty += 1
+    print(f"verify: {margin_bad} frames with text in the right margin, {empty} empty frames (both must be 0)")
+    if margin_bad or empty:
+        raise SystemExit("render verification failed")
 
 
 if __name__ == "__main__":
