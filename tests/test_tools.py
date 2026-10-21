@@ -49,6 +49,19 @@ def test_get_meals_food_filter(toolkit):
     assert "meal #2" not in out  # most recent roti meal is #1
 
 
+def test_get_meals_by_date_returns_the_whole_day(toolkit, conn):
+    """'same as yesterday' reads get_meals(date='yesterday'): six snacks must
+    all come back (the old default of 5 silently dropped one), and an
+    undated listing says when it is truncated."""
+    ts, _ = toolkit
+    for _ in range(6):
+        ts["log_meal"].invoke({"items": [{"food": "chai", "quantity": 1}], "date": "yesterday"})
+    out = ts["get_meals"].invoke({"date": "yesterday"})
+    assert out.count("meal #") == 6 and "more exist" not in out
+    out = ts["get_meals"].invoke({})
+    assert out.count("meal #") == 5 and "more exist" in out
+
+
 def test_grams_embedded_number_multiplies_quantity(conn):
     """{paneer, 2, '100 g'} is 2 x 100 g = 200 g — the embedded number used to
     swallow the quantity (logged 1 x 100 g = 265 instead of 530)."""

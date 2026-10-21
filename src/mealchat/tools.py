@@ -212,25 +212,30 @@ def build_tools(
     def get_meals(
         date: str = "",
         food_like: str = "",
-        limit: int = 5,
+        limit: int = 0,
     ) -> str:
         """Retrieve the user's past meals, most recent first.
 
         date: '' = any day, 'today', 'yesterday' or YYYY-MM-DD.
         food_like: case-insensitive food substring, e.g. 'roti' — use this to
         find the meal a correction refers to.
-        limit: max meals to return (default 5).
+        limit: max meals to return. 0 (default) = every meal of that day when
+        date is set (so 'same as yesterday' sees the whole day), else 5.
         """
         try:
             d = _resolve_date(date, tz) if date.strip() else None
         except ValueError as e:
             return f"Error: {e}"
+        cap = max(1, min(limit, 20)) if limit > 0 else (20 if d else 5)
         meals = db.get_meals(
-            conn, user_id, date=d, food_like=food_like.strip() or None, limit=max(1, min(limit, 20))
+            conn, user_id, date=d, food_like=food_like.strip() or None, limit=cap + 1
         )
         if not meals:
             return "No meals found." + (f" (filtered date={d}, food~{food_like!r})" if d or food_like else "")
-        return "\n".join(_fmt_meal(m) for m in meals)
+        out = "\n".join(_fmt_meal(m) for m in meals[:cap])
+        if len(meals) > cap:  # never truncate silently
+            out += f"\n(showing the {cap} most recent — more exist; narrow by date/food or raise limit)"
+        return out
 
     @tool
     def repeat_meals(meal_ids: list[int], date: str = "today") -> str:
