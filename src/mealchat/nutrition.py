@@ -205,26 +205,41 @@ def _grams(unit: str | None, quantity: float) -> float | None:
     return None
 
 
+class UnitConversionError(ValueError):
+    """A gram/ml quantity that can't be mapped onto the food's nutrition unit."""
+
+
+_MASS_BASIS_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*(?:g|ml)\b")
+
+
+def _basis_grams(food_unit: str) -> float | None:
+    """'100 g cooked' -> 100, '50 g dry' -> 50; None for count units."""
+    m = _MASS_BASIS_RE.match(food_unit.lower().strip())
+    return float(m.group(1)) if m else None
+
+
 def _effective_quantity(
     item: FoodItem, food: db.Food, grams_per_unit: float | None = None
 ) -> tuple[float, str, str | None]:
     """Best-effort unit reconciliation. Returns (qty, unit, note).
 
     Gram/ml quantities are converted into the food's natural unit using the
-    food's grams-per-unit (100 g-basis foods, estimator-provided, or the
-    typical-unit table) — never multiplied raw against a per-unit value.
+    food's grams-per-unit (a mass basis like '50 g dry', estimator-provided,
+    or the typical-unit table) — never multiplied raw against a per-unit
+    value. If none applies, raise instead of guessing.
     """
     qty, unit, note = item.quantity, item.unit or food.unit, item.notes
     g = _grams(item.unit, item.quantity)
     if g is not None:
-        if food.unit.startswith("100 g"):
-            per = 100.0
-        else:
-            per = grams_per_unit or _unit_grams(food.unit)
-        if per:
-            qty = g / per
-            unit = food.unit
-            note = note or f"from {item.unit}"
+        per = _basis_grams(food.unit) or grams_per_unit or _unit_grams(food.unit)
+        if not per:
+            raise UnitConversionError(
+                f"can't convert {item.quantity:g} {item.unit} of {food.name} — its"
+                f" nutrition is per '{food.unit}'. Log it as a count of that unit instead."
+            )
+        qty = g / per
+        unit = food.unit
+        note = note or f"from {item.unit}"
     return qty, unit, note
 
 

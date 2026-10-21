@@ -65,6 +65,25 @@ def test_grams_embedded_number_multiplies_quantity(conn):
     assert items[0].calories == pytest.approx(495, abs=2)
 
 
+def test_grams_use_any_mass_basis_not_just_100g(conn):
+    """Soy chunks are per '50 g dry': 10 g is 0.2 units (34 kcal), not 10
+    servings (1700 kcal)."""
+    items = nutrition.resolve_items(
+        conn, [nutrition.FoodItem("soy chunks", quantity=10, unit="g")]
+    )
+    assert items[0].quantity == pytest.approx(0.2)
+    assert items[0].calories == pytest.approx(34, abs=1)
+
+
+def test_unconvertible_grams_are_refused_not_guessed(toolkit, conn):
+    """Almonds are per '10 nuts' — there's no gram basis, so 30 g must not
+    become 30 x 70 kcal (2100, under the sanity cap). Nothing is logged."""
+    ts, _ = toolkit
+    out = ts["log_meal"].invoke({"items": [{"food": "almonds", "quantity": 30, "unit": "g"}]})
+    assert out.startswith("Error:") and "10 nuts" in out
+    assert db.get_meals(conn, "u1") == []
+
+
 # --- edit_meal must not touch unmentioned items (urgent correction) --------
 
 

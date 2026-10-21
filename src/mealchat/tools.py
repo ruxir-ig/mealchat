@@ -151,14 +151,17 @@ def build_tools(
             share = 1.0
         if share <= 0:
             share = 1.0
-        resolved = nutrition.resolve_items(
-            conn,
-            [
-                nutrition.FoodItem(i.food, i.quantity * share, i.unit, i.notes)
-                for i in items
-            ],
-            estimator,
-        )
+        try:
+            resolved = nutrition.resolve_items(
+                conn,
+                [
+                    nutrition.FoodItem(i.food, i.quantity * share, i.unit, i.notes)
+                    for i in items
+                ],
+                estimator,
+            )
+        except nutrition.UnitConversionError as e:
+            return f"Error: {e} Nothing was logged."
         if not resolved:
             return "Error: no items to log."
         # Sanity guard: a bad unit or a runaway quantity should stop here and
@@ -323,7 +326,10 @@ def build_tools(
             if not ch.remove:
                 requeue.append(nutrition.FoodItem(ch.food, ch.quantity or 1.0, ch.unit, None))
 
-        resolved_extra = nutrition.resolve_items(conn, requeue, estimator) if requeue else []
+        try:
+            resolved_extra = nutrition.resolve_items(conn, requeue, estimator) if requeue else []
+        except nutrition.UnitConversionError as e:
+            return f"Error: {e} Nothing was changed."
 
         try:
             share = float(portion)
