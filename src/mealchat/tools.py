@@ -451,29 +451,23 @@ def build_tools(
         return f"Remembered ({kind}" + (f", {k}" if k else "") + f"): {content}"
 
     @tool
-    def forget_memory(search: str) -> str:
-        """Remove a saved memory about the user. Use when the user corrects or
-        retracts a durable fact ('not vegetarian anymore', 'new protein
-        target is 160g') so outdated facts don't pile up — call this first,
-        then save_memory the replacement if there is one.
+    def forget_memory(memory_id: int) -> str:
+        """Remove one saved memory about the user by its id. The memory block
+        in your context shows ids like [m12] — pass that number (12). Use when
+        the user corrects or retracts a durable fact ('not vegetarian
+        anymore', 'new protein target'), then save_memory the replacement.
 
-        search: substring of the memory to forget, e.g. 'vegetarian', 'usual',
-        or a target key like 'protein'.
+        memory_id: the number from the [mN] tag shown in the memory block.
         """
-        s = search.strip().lower()
-        if not s:
-            return "Error: give me part of the memory text to forget."
-        hits = [
-            m
-            for m in db.get_memories(conn, user_id)
-            if s in m.content.lower() or (m.key or "").lower() == s
-        ]
-        if not hits:
-            return f"Nothing remembered matching {search!r}."
-        for m in hits:
-            db.forget_memory(conn, m.id)
-        effects.setdefault("forgotten", []).extend(m.content for m in hits)
-        return "Forgot: " + "; ".join(f"{m.kind}: {m.content}" for m in hits)
+        mem = db.get_memory(conn, user_id, memory_id)
+        if mem is None:
+            gone = db.get_memory(conn, user_id, memory_id, active_only=False)
+            if gone is not None:
+                return f"Error: memory #{memory_id} is already forgotten."
+            return f"Error: no memory #{memory_id} for this user."
+        db.forget_memory(conn, memory_id)
+        effects.setdefault("forgotten", []).append(mem.content)
+        return f"Forgot #{memory_id} ({mem.kind}): {mem.content}"
 
     return [
         log_meal,

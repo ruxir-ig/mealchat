@@ -495,6 +495,36 @@ def save_memory(
         return int(cur.lastrowid)
 
 
+def _row_to_memory(r: sqlite3.Row) -> Memory:
+    return Memory(
+        id=r["id"],
+        user_id=r["user_id"],
+        kind=r["kind"],
+        key=r["key"],
+        content=r["content"],
+        data=r["data"],
+        num_value=r["num_value"],
+        unit=r["unit"],
+        created_at=r["created_at"],
+        updated_at=r["updated_at"],
+    )
+
+
+@_locked
+def get_memory(
+    conn: sqlite3.Connection,
+    user_id: str,
+    memory_id: int,
+    active_only: bool = True,
+) -> Memory | None:
+    """One memory by id, ownership-scoped. active_only=False also sees forgotten rows."""
+    q = "SELECT * FROM memories WHERE user_id = ? AND id = ?"
+    if active_only:
+        q += " AND active = 1"
+    row = conn.execute(q, (user_id, memory_id)).fetchone()
+    return _row_to_memory(row) if row else None
+
+
 @_locked
 def get_memories(conn: sqlite3.Connection, user_id: str, active_only: bool = True) -> list[Memory]:
     q = "SELECT * FROM memories WHERE user_id = ?"
@@ -502,21 +532,7 @@ def get_memories(conn: sqlite3.Connection, user_id: str, active_only: bool = Tru
         q += " AND active = 1"
     q += " ORDER BY id DESC"
     rows = conn.execute(q, (user_id,)).fetchall()
-    return [
-        Memory(
-            id=r["id"],
-            user_id=r["user_id"],
-            kind=r["kind"],
-            key=r["key"],
-            content=r["content"],
-            data=r["data"],
-            num_value=r["num_value"],
-            unit=r["unit"],
-            created_at=r["created_at"],
-            updated_at=r["updated_at"],
-        )
-        for r in rows
-    ]
+    return [_row_to_memory(r) for r in rows]
 
 
 @_locked

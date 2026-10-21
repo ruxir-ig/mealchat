@@ -40,11 +40,11 @@ def memory_block(conn: sqlite3.Connection, user_id: str) -> str:
     lines: list[str] = []
     for m in mems:
         if m.kind == "target" and m.key:
-            lines.append(f"- target {m.key}: {m.num_value:g}{m.unit or ''} per day")
+            lines.append(f"- target {m.key}: {m.num_value:g}{m.unit or ''} per day [m{m.id}]")
             continue
         label = f"- {m.kind} ({m.key})" if m.key else f"- {m.kind}"
         suffix = _items_suffix(m)
-        lines.append(f"{label}: {m.content}{suffix}")
+        lines.append(f"{label} [m{m.id}]: {m.content}{suffix}")
         if len(lines) >= _MAX_LINES:
             break
     return "\n".join(lines)

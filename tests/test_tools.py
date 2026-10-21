@@ -155,23 +155,45 @@ def test_save_memory_renders_in_block(toolkit, conn):
     assert "target protein: 140g" in block
 
 
-def test_forget_memory_removes_without_touching_others(toolkit, conn):
+def test_memory_block_shows_ids(toolkit, conn):
+    ts, _ = toolkit
+    ts["save_memory"].invoke({"kind": "preference", "content": "vegetarian", "key": "diet"})
+    block = memory.memory_block(conn, "u1")
+    mid = next(m.id for m in db.get_memories(conn, "u1"))
+    assert f"[m{mid}]" in block
+
+
+def test_forget_memory_by_id_removes_only_that_one(toolkit, conn):
     ts, effects = toolkit
-    ts["save_memory"].invoke({"kind": "preference", "content": "vegetarian"})
+    veg_id = ts["save_memory"].invoke(
+        {"kind": "preference", "content": "vegetarian", "key": "diet"}
+    )
+    # capture the id from the DB (the tool returns a string)
+    veg_id = next(m.id for m in db.get_memories(conn, "u1") if m.key == "diet")
     ts["save_memory"].invoke({"kind": "preference", "content": "no eggs"})
-    out = ts["forget_memory"].invoke({"search": "vegetarian"})
+    out = ts["forget_memory"].invoke({"memory_id": veg_id})
     assert "Forgot" in out and "vegetarian" in out and "no eggs" not in out
     contents = [m.content for m in db.get_memories(conn, "u1")]
-    assert "vegetarian" not in contents and "no eggs" in contents
+    assert all("vegetarian" not in c for c in contents) and "no eggs" in contents
     assert "vegetarian" in effects.get("forgotten", [])
 
-    # target keys are forgettable too
-    ts["save_memory"].invoke(
-        {"kind": "target", "content": "2000 kcal daily", "key": "calories", "value": 2000}
-    )
-    out = ts["forget_memory"].invoke({"search": "calories"})  # matches by key, not content
-    assert "2000" in out
-    assert all(m.key != "calories" for m in db.get_memories(conn, "u1"))
+
+def test_forget_memory_rejects_other_users(toolkit, conn):
+    ts, _ = toolkit
+    db.save_memory(conn, "u2", "preference", "vegetarian", key="diet")
+    other_id = next(m.id for m in db.get_memories(conn, "u2"))
+    out = ts["forget_memory"].invoke({"memory_id": other_id})
+    assert "Error" in out
+    assert db.get_memory(conn, "u2", other_id) is not None  # untouched
+
+
+def test_forget_twice_reports_already_forgotten(toolkit, conn):
+    ts, _ = toolkit
+    ts["save_memory"].invoke({"kind": "preference", "content": "vegetarian", "key": "diet"})
+    mid = next(m.id for m in db.get_memories(conn, "u1"))
+    ts["forget_memory"].invoke({"memory_id": mid})
+    out = ts["forget_memory"].invoke({"memory_id": mid})
+    assert "already forgotten" in out
 
 
 def test_meal_type_inferred_from_clock(toolkit, conn):
