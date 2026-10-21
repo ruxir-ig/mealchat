@@ -127,6 +127,33 @@ _ALIASES: dict[str, str] = {
 
 # Rough estimate when both the table and the LLM fail us
 _FALLBACK = ("serving", 250, 8, 30, 10)
+# ...and a per-100g basis for when the user speaks in grams of an unknown food
+_FALLBACK_PER_100G = (180, 8, 20, 7)
+
+# Typical grams (or ml for drinks; ~1 ml ~= 1 g here) in ONE unit, used to
+# convert gram/ml quantities into the food's natural unit.
+_UNIT_GRAMS = {
+    "bowl": 300,
+    "plate": 400,
+    "cup": 240,
+    "glass": 250,
+    "box": 600,
+    "tbsp": 15,
+    "tsp": 5,
+    "can": 330,
+    "slice": 30,
+    "pack": 100,
+}
+
+
+def _unit_grams(unit: str) -> float | None:
+    u = unit.lower().strip()
+    if u in _UNIT_GRAMS:
+        return _UNIT_GRAMS[u]
+    for tok in u.split():
+        if tok in _UNIT_GRAMS:
+            return _UNIT_GRAMS[tok]
+    return None
 
 
 def normalize(name: str) -> str:
@@ -161,26 +188,39 @@ def lookup_food(conn: sqlite3.Connection, name: str) -> db.Food | None:
 
 
 def _grams(unit: str | None, quantity: float) -> float | None:
-    """'150 g' -> 150.0, bare 'g'/'grams' -> the item's quantity. None if not grams."""
+    """'150 g'/'250 ml' -> that number; bare 'g'/'grams'/'ml' -> the item's
+    quantity. None if the unit is not gram/ml."""
     if not unit:
         return None
     u = unit.lower().strip()
-    m = re.search(r"(\d+(?:\.\d+)?)\s*g\b", u)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:g|gram|grams|ml|mls|milliliters?|millilitres?)\b", u)
     if m:
         return float(m.group(1))
-    if u in ("g", "gram", "grams"):
+    if u in ("g", "gram", "grams", "ml", "mls", "milliliter", "milliliters", "millilitre", "millilitres"):
         return quantity
     return None
 
 
-def _effective_quantity(item: FoodItem, food: db.Food) -> tuple[float, str, str | None]:
-    """Best-effort unit reconciliation. Returns (qty, unit, note)."""
+def _effective_quantity(
+    item: FoodItem, food: db.Food, grams_per_unit: float | None = None
+) -> tuple[float, str, str | None]:
+    """Best-effort unit reconciliation. Returns (qty, unit, note).
+
+    Gram/ml quantities are converted into the food's natural unit using the
+    food's grams-per-unit (100 g-basis foods, estimator-provided, or the
+    typical-unit table) — never multiplied raw against a per-unit value.
+    """
     qty, unit, note = item.quantity, item.unit or food.unit, item.notes
     g = _grams(item.unit, item.quantity)
-    if g is not None and food.unit.startswith("100 g"):
-        qty = g / 100.0
-        unit = food.unit
-        note = note or f"{item.unit}"
+    if g is not None:
+        if food.unit.startswith("100 g"):
+            per = 100.0
+        else:
+            per = grams_per_unit or _unit_grams(food.unit)
+        if per:
+            qty = g / per
+            unit = food.unit
+            note = note or f"from {item.unit}"
     return qty, unit, note
 
 
@@ -198,7 +238,7 @@ def resolve_items(
         if food is None:
             missing.append(item)
         else:
-            qty, unit, note = _effective_quantity(item, food)
+            qty, unit, note = _effective_quantity(item, food, food.grams_per_unit)
             resolved.append(_scale(item, food, qty, unit, note))
 
     if missing:
@@ -217,24 +257,48 @@ def resolve_items(
                     carbs=float(est.get("carbs", _FALLBACK[3])),
                     fat=float(est.get("fat", _FALLBACK[4])),
                     source="llm",
+                    grams_per_unit=(
+                        float(est["grams_per_unit"])
+                        if est.get("grams_per_unit") is not None
+                        else None
+                    ),
                 )
                 db.upsert_food(conn, food)  # cache: estimated only once
-                qty, unit, note = _effective_quantity(item, food)
+                qty, unit, note = _effective_quantity(item, food, food.grams_per_unit)
                 resolved.append(_scale(item, food, qty, unit, note))
             else:
-                unit, kcal, p, c, f = _FALLBACK
-                resolved.append(
-                    db.MealItem(
-                        food=item.food.strip(),
-                        quantity=item.quantity,
-                        unit=item.unit or unit,
-                        calories=kcal * item.quantity,
-                        protein=p * item.quantity,
-                        carbs=c * item.quantity,
-                        fat=f * item.quantity,
-                        notes=(item.notes + " (rough fallback estimate)") if item.notes else "rough fallback estimate",
+                g = _grams(item.unit, item.quantity)
+                if g is not None:
+                    # unknown food, but the user told us the mass: use a
+                    # per-100g generic cooked-dish estimate, not per-serving x grams
+                    kcal, p, c, f = _FALLBACK_PER_100G
+                    qty = g / 100.0
+                    resolved.append(
+                        db.MealItem(
+                            food=item.food.strip(),
+                            quantity=round(qty, 2),
+                            unit="100 g",
+                            calories=kcal * qty,
+                            protein=p * qty,
+                            carbs=c * qty,
+                            fat=f * qty,
+                            notes=(item.notes + " (rough fallback, per 100 g)") if item.notes else "rough fallback, per 100 g",
+                        )
                     )
-                )
+                else:
+                    unit, kcal, p, c, f = _FALLBACK
+                    resolved.append(
+                        db.MealItem(
+                            food=item.food.strip(),
+                            quantity=item.quantity,
+                            unit=item.unit or unit,
+                            calories=kcal * item.quantity,
+                            protein=p * item.quantity,
+                            carbs=c * item.quantity,
+                            fat=f * item.quantity,
+                            notes=(item.notes + " (rough fallback estimate)") if item.notes else "rough fallback estimate",
+                        )
+                    )
     return resolved
 
 

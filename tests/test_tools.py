@@ -127,3 +127,44 @@ def test_bad_date_returns_error(toolkit):
     ts, _ = toolkit
     out = ts["log_meal"].invoke({"items": [{"food": "roti", "quantity": 1}], "date": "tomorrow"})
     assert "Error" in out
+
+
+# --- sanity-guard tests (review round 2, task A1) ---------------------------
+
+
+def test_guard_blocks_runaway_single_item(toolkit, conn):
+    """200 units of paneer curry = 64000 kcal must not be logged."""
+    ts, effects = toolkit
+    out = ts["log_meal"].invoke({"items": [{"food": "paneer curry", "quantity": 200}]})
+    assert "Error" in out and "confirm" in out
+    assert db.get_meals(conn, "u1") == []
+    assert "logged" not in effects
+
+
+def test_guard_blocks_runaway_meal_total(toolkit, conn):
+    """Each item under the cap but the meal over it: still blocked."""
+    ts, _ = toolkit
+    out = ts["log_meal"].invoke(
+        {
+            "items": [
+                {"food": "biryani", "quantity": 3},   # 2400
+                {"food": "dal makhani", "quantity": 7},  # 1960 -> 4360 total
+            ]
+        }
+    )
+    assert "Error" in out and "4000" in out
+    assert db.get_meals(conn, "u1") == []
+
+
+def test_guard_allows_large_but_plausible_meal(toolkit, conn):
+    ts, _ = toolkit
+    out = ts["log_meal"].invoke(
+        {
+            "items": [
+                {"food": "biryani", "quantity": 1.5},  # 1200
+                {"food": "chicken curry", "quantity": 2},  # 700
+            ]
+        }
+    )
+    assert "Logged meal" in out
+    assert db.day_totals(conn, "u1", db.local_today(TZ)).calories == pytest.approx(1900)

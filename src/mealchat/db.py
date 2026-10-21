@@ -66,15 +66,16 @@ CREATE TABLE IF NOT EXISTS meal_items (
 CREATE INDEX IF NOT EXISTS idx_items_meal ON meal_items(meal_id);
 
 CREATE TABLE IF NOT EXISTS foods (
-  key        TEXT PRIMARY KEY,              -- normalized lowercase food name
-  name       TEXT NOT NULL,
-  unit       TEXT NOT NULL,                 -- what quantity=1 means
-  calories   REAL NOT NULL,
-  protein    REAL NOT NULL,
-  carbs      REAL NOT NULL,
-  fat        REAL NOT NULL,
-  source     TEXT NOT NULL,                 -- builtin | llm
-  created_at TEXT NOT NULL
+  key            TEXT PRIMARY KEY,              -- normalized lowercase food name
+  name           TEXT NOT NULL,
+  unit           TEXT NOT NULL,                 -- what quantity=1 means
+  calories       REAL NOT NULL,
+  protein        REAL NOT NULL,
+  carbs          REAL NOT NULL,
+  fat            REAL NOT NULL,
+  grams_per_unit REAL,                         -- typical grams (or ml) in ONE unit
+  source         TEXT NOT NULL,                 -- builtin | llm
+  created_at     TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS memories (
@@ -115,7 +116,21 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 @_locked
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive column migrations for DBs created by older versions."""
+    _add_column_if_missing(conn, "foods", "grams_per_unit", "REAL")
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection, table: str, column: str, decl: str
+) -> None:
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
 def _now() -> str:
@@ -361,6 +376,7 @@ class Food:
     carbs: float
     fat: float
     source: str
+    grams_per_unit: float | None = None
 
 
 def normalize_food(name: str) -> str:
@@ -371,11 +387,11 @@ def normalize_food(name: str) -> str:
 def upsert_food(conn: sqlite3.Connection, food: Food) -> None:
     with conn:
         conn.execute(
-            "INSERT INTO foods (key, name, unit, calories, protein, carbs, fat, source, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO foods (key, name, unit, calories, protein, carbs, fat, grams_per_unit, source, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(key) DO UPDATE SET name=excluded.name, unit=excluded.unit,"
             " calories=excluded.calories, protein=excluded.protein, carbs=excluded.carbs,"
-            " fat=excluded.fat, source=excluded.source",
+            " fat=excluded.fat, grams_per_unit=excluded.grams_per_unit, source=excluded.source",
             (
                 food.key,
                 food.name,
@@ -384,6 +400,7 @@ def upsert_food(conn: sqlite3.Connection, food: Food) -> None:
                 food.protein,
                 food.carbs,
                 food.fat,
+                food.grams_per_unit,
                 food.source,
                 _now(),
             ),
@@ -404,6 +421,7 @@ def get_food(conn: sqlite3.Connection, key: str) -> Food | None:
         carbs=row["carbs"],
         fat=row["fat"],
         source=row["source"],
+        grams_per_unit=row["grams_per_unit"],
     )
 
 

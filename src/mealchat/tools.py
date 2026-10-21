@@ -28,6 +28,11 @@ from mealchat.models import FoodEstimator
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MEAL_TYPES = ("breakfast", "lunch", "dinner", "snack")
 
+# Sanity caps: a single logged item or whole meal above these is almost
+# certainly a mis-parsed quantity — make the agent confirm instead of logging.
+MAX_ITEM_KCAL = 2500
+MAX_MEAL_KCAL = 4000
+
 
 class LogItem(BaseModel):
     food: str
@@ -130,6 +135,17 @@ def build_tools(
         )
         if not resolved:
             return "Error: no items to log."
+        # Sanity guard: a bad unit or a runaway quantity should stop here and
+        # get confirmed by the user — never poison the day's totals.
+        item_kcal = [r.calories for r in resolved]
+        if max(item_kcal) > MAX_ITEM_KCAL or sum(item_kcal) > MAX_MEAL_KCAL:
+            worst = max(item_kcal)
+            return (
+                f"Error: this log looks too large to be real (largest item {worst:g} kcal,"
+                f" meal total {sum(item_kcal):g} kcal; caps are {MAX_ITEM_KCAL} per item /"
+                f" {MAX_MEAL_KCAL} per meal). Nothing was logged. Ask the user to confirm"
+                " what and how much they actually ate, then log the confirmed amounts."
+            )
         desc = description.strip() or " + ".join(i.food for i in resolved)
         if share != 1.0 and "portion" not in desc:
             desc = f"{desc} ({share:g} portion)"

@@ -63,7 +63,7 @@ of ONE typical serving / piece / cup (the natural everyday unit, the way a perso
 Foods: {foods}
 
 Respond with ONLY a JSON object, no markdown, no prose:
-{{"results": [{{"food": "<name>", "unit": "<the unit your numbers are for>", "calories": <number>, "protein": <grams>, "carbs": <grams>, "fat": <grams>}}]}}"""
+{{"results": [{{"food": "<name>", "unit": "<the unit your numbers are for>", "grams_per_unit": <typical grams (or ml) in ONE unit, or null if not applicable>, "calories": <number>, "protein": <grams>, "carbs": <grams>, "fat": <grams>}}]}}"""
 
 
 def make_estimator(llm: BaseChatModel) -> FoodEstimator:
