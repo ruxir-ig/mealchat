@@ -26,10 +26,11 @@ Look at this photo of food. Respond with ONLY a JSON object, no markdown, no pro
 {
   "description": "<one short sentence describing the food>",
   "items": [{"food": "<name>", "quantity": <number, for the WHOLE visible portion>, "unit": "<piece|cup|bowl|plate|box|serving>", "confidence": "<high|medium|low>"}],
-  "uncertain": <true if you cannot reliably identify the foods or the portions>,
+  "single_serving": <true if this looks like one person's own plate/meal; false for a shared or family spread>,
+  "uncertain": <true only if you cannot reliably identify the food at all>,
   "question": "<if uncertain: the single best question to ask the user, else null>"
 }
-Rules: quantity covers the whole visible portion. Merge duplicates (e.g. four rotis on one plate -> one item, quantity 4). If the photo is not food, or you truly can't tell what it is, set uncertain true and write the question. Do not guess when uncertain."""
+Rules: quantity covers the whole visible portion. Merge duplicates (four rotis on one plate -> one item, quantity 4). Name every distinct food — if actual food is visible but its exact type is unclear, use the best generic name (e.g. "mixed vegetable curry", "dal") rather than hedging or merging dishes. But if the image does not clearly show real food (an object, a screenshot, a solid color, a drawing, an empty plate), you MUST set uncertain=true and give the question — never invent a food for a non-food image."""
 
 
 @dataclass
@@ -45,6 +46,9 @@ class VisionResult:
         """Rendered into the user turn for the TEXT agent (clearly delimited)."""
         lines = ["[Photo analysis by the vision model — not the user's own words]"]
         lines.append(f"Description: {self.description or 'unavailable'}")
+        single = self.meta.get("single_serving")
+        if single is not None:
+            lines.append("Looks like one person's own meal." if single else "Looks like a SHARED/family spread.")
         if self.items:
             for it in self.items:
                 conf = it.get("confidence", "?")
@@ -98,9 +102,11 @@ def _parse_json(text: str) -> dict | None:
         return None
 
 
-def analyze_photo(llm: BaseChatModel, image_path: str | Path) -> VisionResult:
+def analyze_photo(
+    llm: BaseChatModel, image_path: str | Path, max_dim: int = MAX_DIM
+) -> VisionResult:
     """One structured vision call. Any doubt -> VisionResult(uncertain=True)."""
-    jpeg, meta = prepare_image(image_path)
+    jpeg, meta = prepare_image(image_path, max_dim)
     b64 = base64.b64encode(jpeg).decode()
     result = VisionResult(meta=meta)
     try:
@@ -142,6 +148,8 @@ def analyze_photo(llm: BaseChatModel, image_path: str | Path) -> VisionResult:
         result.items = items
         result.uncertain = bool(data.get("uncertain", False)) or not items
         result.question = data.get("question") or None
+        if "single_serving" in data:
+            result.meta["single_serving"] = bool(data["single_serving"])
     except Exception as e:  # network/parse failure -> ask, never guess
         result.uncertain = True
         result.question = "I couldn't analyze that photo — what did you eat?"

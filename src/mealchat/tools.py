@@ -48,10 +48,8 @@ def _resolve_date(raw: str, tz: ZoneInfo) -> str:
 
 
 def _fmt_item(it: db.MealItem) -> str:
-    s = f"{it.quantity:g} {it.unit} {it.food} ({it.calories:g} kcal"
-    if it.notes:
-        s += f"; {it.notes}"
-    return s + ")"
+    note = f"; {it.notes}" if it.notes else ""
+    return f"{it.food} x{it.quantity:g} [{it.unit}] {it.calories:g} kcal{note}"
 
 
 def _fmt_meal(m: db.Meal) -> str:
@@ -93,18 +91,21 @@ def build_tools(
         meal_type: str = "",
         date: str = "today",
         description: str = "",
+        portion: float = 1.0,
     ) -> str:
         """Log ONE meal (breakfast/lunch/etc). Use for new meals only — for
         corrections to an already-logged meal use edit_meal, never this.
 
-        items: one entry per food. quantity in the food's natural unit
-        (2 rotis -> food "roti", quantity 2; two-thirds of a takeaway box of
-        biryani -> food "biryani", quantity 0.67, unit "box"). Fractions of a
-        shared dish go in quantity. Nutrition is resolved automatically — do
-        not call nutrition_lookup first for a normal log.
+        items: one entry per food, quantities for the WHOLE meal as eaten/seen
+        (2 rotis -> food "roti", quantity 2). Nutrition is resolved automatically
+        — do not call nutrition_lookup first for a normal log.
         meal_type: breakfast/lunch/dinner/snack, or "" if unknown.
         date: 'today', 'yesterday' or YYYY-MM-DD.
         description: short human phrase for the meal log, e.g. '2 parathas and chai'.
+        portion: what fraction of this whole meal the user actually ate —
+        0.5 when 'half of this was my brother's', 1.0 for a full meal. The tool
+        scales every item by this number, so pass FULL quantities in items and
+        put the share here; do NOT pre-multiply quantities yourself.
         """
         try:
             d = _resolve_date(date, tz)
@@ -113,14 +114,28 @@ def build_tools(
         mtype = meal_type.strip().lower() if meal_type else ""
         if mtype not in _MEAL_TYPES:
             mtype = ""
+        try:
+            share = float(portion)
+        except (TypeError, ValueError):
+            share = 1.0
+        if share <= 0:
+            share = 1.0
         resolved = nutrition.resolve_items(
-            conn, [nutrition.FoodItem(i.food, i.quantity, i.unit, i.notes) for i in items], estimator
+            conn,
+            [
+                nutrition.FoodItem(i.food, i.quantity * share, i.unit, i.notes)
+                for i in items
+            ],
+            estimator,
         )
         if not resolved:
             return "Error: no items to log."
         desc = description.strip() or " + ".join(i.food for i in resolved)
+        if share != 1.0 and "portion" not in desc:
+            desc = f"{desc} ({share:g} portion)"
         mid = db.add_meal(conn, user_id, d, desc, resolved, meal_type=mtype, source=source)
         effects.setdefault("logged", []).append(mid)
+        effects.setdefault("portions", []).append(share)
         out = [f"Logged meal #{mid} ({d}, {mtype or 'snack'}):"]
         for r in resolved:
             out.append(f"- {_fmt_item(r)}")

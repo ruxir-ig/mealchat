@@ -48,6 +48,7 @@ _BUILTIN: dict[str, tuple[str, float, float, float, float]] = {
     "sabzi": ("bowl", 150, 4, 15, 8),
     "mutton curry": ("bowl", 400, 25, 8, 30),
     "chicken curry": ("bowl", 350, 28, 8, 22),
+    "fried chicken": ("piece", 200, 15, 8, 13),
     "lassi": ("glass, sweet", 300, 7, 50, 8),
     "gulab jamun": ("piece", 175, 3, 25, 8),
     "jalebi": ("piece", 150, 1, 25, 6),
@@ -97,10 +98,15 @@ _ALIASES: dict[str, str] = {
     "parantha": "paratha",
     "tea": "chai",
     "masala chai": "chai",
+    "chai with sugar": "chai",
+    "sweet chai": "chai",
     "lentils": "dal",
     "curd": "dahi",
     "yogurt": "dahi",
     "curd rice": "rice",
+    "white rice": "rice",
+    "basmati rice": "rice",
+    "biryani rice": "biryani",
     "biryani box": "biryani",
     "idlis": "idli",
     "dosas": "dosa",
@@ -128,6 +134,10 @@ def normalize(name: str) -> str:
     n = _ALIASES.get(n, n)
     if n not in _BUILTIN and n.endswith("s") and n[:-1] in _BUILTIN:
         n = n[:-1]
+    if n not in _BUILTIN and " with " in n:  # "chai with sugar" -> "chai"
+        base = n.split(" with ")[0].strip()
+        if base in _BUILTIN or base in _ALIASES:
+            n = _ALIASES.get(base, base)
     return n
 
 
