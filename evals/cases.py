@@ -443,6 +443,55 @@ CASES.append(
 )
 
 
+def check_photo_then_caption(conn, user_id, replies):
+    """Photo first, caption as a SEPARATE follow-up message. The invariant that
+    matters: exactly ONE halved meal at the end, with no second log. Two valid
+    paths: (a) photo logged -> caption EDITS that meal; (b) photo asked (vision
+    flagged a shared spread) -> caption logs ONE meal at half. Both end the same."""
+    fails = []
+    meals = _meals(conn, user_id)
+    if len(meals) != 1:
+        fails.append(f"photo + later caption must end as ONE meal, got {len(meals)}")
+        return fails
+    first, second = replies[0], replies[1]
+    first_logged = "logged" in first.effects
+    second_logged = "logged" in second.effects
+    if first_logged and second_logged:
+        fails.append("double log: caption turn logged a SECOND meal instead of editing")
+    elif first_logged and "edited" not in second.effects:
+        fails.append(f"photo meal was logged, so the caption must EDIT it, effects: {second.effects}")
+    elif not first_logged and not second_logged:
+        fails.append(f"photo turn asked instead of logging, so the caption must log ONE meal, effects: {second.effects}")
+    if first_logged and second_logged:
+        return fails  # quantities already wrong; skip the halving noise
+    vis = first.vision
+    if not vis or not vis.items:
+        fails.append("no vision items recorded for the photo turn")
+        return fails
+    for li in meals[0].items:
+        vm = _fuzzy_vision_match(li.food, vis.items)
+        if vm is None:
+            continue
+        expect = float(vm.get("quantity", 1)) * 0.5
+        if li.quantity > expect + 0.06 or li.quantity < expect - 0.35:
+            fails.append(
+                f"{li.food} x{li.quantity:g} should be ~{expect:g} (half of vision's"
+                f" {vm.get('food')} x{float(vm.get('quantity', 1)):g})"
+            )
+    return fails
+
+
+CASES.append(
+    EvalCase(
+        name="photo_then_separate_caption",
+        correct_is="photo, then 'half of this was my brother's' as a separate message -> exactly ONE halved meal; if the photo logged, the caption edits it — never a second log",
+        turns=[("", PLATE), ("half of this was my brother's", None)],
+        check=check_photo_then_caption,
+        separator=True,
+    )
+)
+
+
 def check_photo_asks(conn, user_id, replies):
     fails = []
     meals = _meals(conn, user_id)
