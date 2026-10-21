@@ -41,6 +41,15 @@ class LogItem(BaseModel):
     notes: str | None = None
 
 
+class MealChange(BaseModel):
+    """One spot change to an existing meal item, matched by food name."""
+
+    food: str
+    quantity: float | None = None
+    unit: str | None = None
+    remove: bool = False
+
+
 def _resolve_date(raw: str, tz: ZoneInfo) -> str:
     s = (raw or "").strip().lower()
     if s in ("", "today"):
@@ -185,28 +194,97 @@ def build_tools(
     @tool
     def edit_meal(
         meal_id: int,
-        items: list[LogItem],
+        changes: list[MealChange],
         meal_type: str = "",
         description: str = "",
+        portion: float = 1.0,
     ) -> str:
-        """Edit an already-logged meal by REPLACING its items — the right tool
-        for corrections like 'actually that was 3 rotis not 2'. Nutrition is
-        re-resolved for the new items and day totals update automatically;
-        nothing gets double-counted because items are replaced, not added.
+        """Edit an already-logged meal with SPOT changes — the right tool for
+        corrections like 'actually that was 3 rotis not 2' or 'skip the chai'.
+        Only the foods you mention are touched; every other item is KEPT
+        unchanged, so nothing gets lost or double-counted.
 
-        meal_id: from get_meals. items: the CORRECTED full item list for the
-        whole meal (not just the changed food). meal_type/description optional.
+        meal_id: from get_meals.
+        changes: one entry per food to change, matched to existing items by
+        food name. {"food": "roti", "quantity": 3} updates just the rotis;
+        {"food": "chai", "remove": true} removes the chai; a food that is not
+        in the meal yet is ADDED. Give quantity in the food's natural unit.
+        meal_type/description optional overrides.
+        portion: like on log_meal — what fraction of the resulting meal the
+        user ate (e.g. 0.5). Pass item quantities for the WHOLE meal and the
+        share here; it scales every item.
         """
         meal = db.get_meal(conn, meal_id)
         if meal is None or meal.user_id != user_id:
             return f"Error: meal #{meal_id} not found for this user."
+
+        # match changes to existing items by normalized food name
+        pending: list[MealChange] = list(changes)
+        final: list[nutrition.FoodItem] = []
+        for it in meal.items:
+            match_idx = next(
+                (
+                    k
+                    for k, ch in enumerate(pending)
+                    if not ch.remove
+                    and nutrition.normalize(ch.food) == nutrition.normalize(it.food)
+                ),
+                None,
+            )
+            remove_idx = next(
+                (
+                    k
+                    for k, ch in enumerate(pending)
+                    if ch.remove and nutrition.normalize(ch.food) == nutrition.normalize(it.food)
+                ),
+                None,
+            )
+            if remove_idx is not None:
+                pending.pop(remove_idx)
+                continue
+            if match_idx is not None:
+                ch = pending.pop(match_idx)
+                final.append(
+                    nutrition.FoodItem(
+                        it.food,
+                        ch.quantity if ch.quantity is not None else it.quantity,
+                        ch.unit or it.unit,
+                        it.notes,
+                    )
+                )
+            else:
+                final.append(nutrition.FoodItem(it.food, it.quantity, it.unit, it.notes))
+        # unmatched changes are additions
+        for ch in pending:
+            if not ch.remove:
+                final.append(nutrition.FoodItem(ch.food, ch.quantity or 1.0, ch.unit, None))
+
+        try:
+            share = float(portion)
+        except (TypeError, ValueError):
+            share = 1.0
+        if share <= 0:
+            share = 1.0
         resolved = nutrition.resolve_items(
-            conn, [nutrition.FoodItem(i.food, i.quantity, i.unit, i.notes) for i in items], estimator
+            conn,
+            [nutrition.FoodItem(f.food, f.quantity * share, f.unit, f.notes) for f in final],
+            estimator,
         )
+        if not resolved:
+            return "Error: the edit would leave the meal empty."
+        item_kcal = [r.calories for r in resolved]
+        if max(item_kcal) > MAX_ITEM_KCAL or sum(item_kcal) > MAX_MEAL_KCAL:
+            return (
+                f"Error: the edited meal looks too large to be real (largest item"
+                f" {max(item_kcal):g} kcal, total {sum(item_kcal):g} kcal; caps are"
+                f" {MAX_ITEM_KCAL} per item / {MAX_MEAL_KCAL} per meal). Nothing was"
+                " changed. Ask the user to confirm what and how much they ate."
+            )
         mtype = meal_type.strip().lower() if meal_type and meal_type.strip().lower() in _MEAL_TYPES else meal.meal_type
         desc = description.strip() or meal.description
         db.edit_meal(conn, meal_id, items=resolved, meal_type=mtype, description=desc)
         effects.setdefault("edited", []).append(meal_id)
+        effects.setdefault("portions", []).append(share)
         out = [f"Updated meal #{meal_id} ({meal.date}):"]
         for r in resolved:
             out.append(f"- {_fmt_item(r)}")

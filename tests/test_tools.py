@@ -48,13 +48,52 @@ def test_get_meals_food_filter(toolkit):
     assert "meal #2" not in out  # most recent roti meal is #1
 
 
-def test_edit_meal_replaces_not_adds(toolkit, conn):
-    ts, _effects = toolkit
-    ts["log_meal"].invoke({"items": [{"food": "roti", "quantity": 2}]})
-    out = ts["edit_meal"].invoke({"meal_id": 1, "items": [{"food": "roti", "quantity": 3}]})
+def test_edit_meal_spot_change_keeps_unmentioned_items(toolkit, conn):
+    """The 'actually 3 rotis not 2' case: the chai must survive the edit."""
+    ts, effects = toolkit
+    ts["log_meal"].invoke(
+        {"items": [{"food": "roti", "quantity": 2}, {"food": "chai", "quantity": 1}]}
+    )
+    assert db.day_totals(conn, "u1", db.local_today(TZ)).calories == pytest.approx(330)
+
+    out = ts["edit_meal"].invoke({"meal_id": 1, "changes": [{"food": "roti", "quantity": 3}]})
     assert "Updated meal #1" in out
-    assert "360 kcal" in out
-    assert db.day_totals(conn, "u1", db.local_today(TZ)).calories == pytest.approx(360)
+    items = db.get_meal(conn, 1).items
+    assert [(i.food, i.quantity) for i in items] == [("roti", 3.0), ("chai", 1.0)]
+    assert db.day_totals(conn, "u1", db.local_today(TZ)).calories == pytest.approx(450)
+    assert effects["edited"] == [1]
+
+
+def test_edit_meal_removes_single_item(toolkit, conn):
+    ts, _ = toolkit
+    ts["log_meal"].invoke(
+        {"items": [{"food": "roti", "quantity": 2}, {"food": "chai", "quantity": 1}]}
+    )
+    ts["edit_meal"].invoke({"meal_id": 1, "changes": [{"food": "chai", "remove": True}]})
+    items = db.get_meal(conn, 1).items
+    assert [i.food for i in items] == ["roti"]
+    assert db.day_totals(conn, "u1", db.local_today(TZ)).calories == pytest.approx(240)
+
+
+def test_edit_meal_adds_new_food(toolkit, conn):
+    ts, _ = toolkit
+    ts["log_meal"].invoke({"items": [{"food": "roti", "quantity": 2}]})
+    ts["edit_meal"].invoke({"meal_id": 1, "changes": [{"food": "dal", "quantity": 1}]})
+    items = db.get_meal(conn, 1).items
+    assert sorted(i.food for i in items) == ["dal", "roti"]
+    assert db.day_totals(conn, "u1", db.local_today(TZ)).calories == pytest.approx(420)
+
+
+def test_edit_meal_portion_scales_every_item(toolkit, conn):
+    ts, _ = toolkit
+    ts["log_meal"].invoke(
+        {"items": [{"food": "roti", "quantity": 2}, {"food": "chai", "quantity": 1}]}
+    )
+    ts["edit_meal"].invoke({"meal_id": 1, "changes": [], "portion": 0.5})
+    items = {i.food: i.quantity for i in db.get_meal(conn, 1).items}
+    assert items["roti"] == pytest.approx(1.0)  # 2 x 0.5
+    assert items["chai"] == pytest.approx(0.5)
+    assert db.day_totals(conn, "u1", db.local_today(TZ)).calories == pytest.approx(165)
 
 
 def test_delete_meal(toolkit, conn):
@@ -66,10 +105,21 @@ def test_delete_meal(toolkit, conn):
     assert effects["deleted"] == [1]
 
 
+def test_edit_meal_guard_blocks_runaway_change(toolkit, conn):
+    ts, _ = toolkit
+    ts["log_meal"].invoke({"items": [{"food": "roti", "quantity": 2}]})
+    out = ts["edit_meal"].invoke({"meal_id": 1, "changes": [{"food": "roti", "quantity": 50}]})
+    assert "Error" in out and "confirm" in out
+    # meal untouched
+    assert db.get_meal(conn, 1).items[0].quantity == pytest.approx(2)
+
+
 def test_edit_meal_wrong_user_rejected(toolkit, conn):
     ts, _ = toolkit
     db.add_meal(conn, "u2", "2026-10-21", "x", [db.MealItem("roti", 1, "roti", 120, 3, 18, 1.5)])
-    out = ts["edit_meal"].invoke({"meal_id": 1, "items": [{"food": "roti", "quantity": 3}]})
+    out = ts["edit_meal"].invoke(
+        {"meal_id": 1, "changes": [{"food": "roti", "quantity": 3}]}
+    )
     assert "Error" in out
 
 

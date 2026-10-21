@@ -86,13 +86,16 @@ def check_correction(conn, user_id, replies):
     if len(meals) != 1:
         fails.append(f"SEPARATOR FAIL: expected 1 meal after correction, got {len(meals)} (double-count?)")
         return fails
-    roti = [i for i in meals[0].items if "roti" in i.food.lower()]
-    if not roti or roti[0].quantity != 3:
+    by_food = {i.food: i for i in meals[0].items}
+    roti = by_food.get("roti")
+    if roti is None or roti.quantity != 3:
         fails.append(f"expected 3 rotis after correction, got {[(i.food, i.quantity) for i in meals[0].items]}")
+    chai = by_food.get("chai")
+    if chai is None or chai.quantity != 1:
+        fails.append("the chai must SURVIVE the correction (spot-change semantics, not full-list replace)")
     t = _totals(conn, user_id)
-    # 3 x 120 = 360 (+ chai 90 if logged) — must NOT be 240+360
-    if t.calories not in (360, 450):
-        fails.append(f"expected 360 kcal (or 450 with chai), got {t.calories} (double-count?)")
+    if t.calories != 450:  # 3 x 120 + 90 — not 360 (chai dropped), not 780 (double-count)
+        fails.append(f"expected exactly 450 kcal (3 rotis + chai), got {t.calories}")
     if "edited" not in replies[-1].effects:
         fails.append("correction did not go through edit_meal (effects missing 'edited')")
     return fails
