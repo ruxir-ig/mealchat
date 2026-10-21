@@ -69,7 +69,7 @@ def _totals_line(conn: sqlite3.Connection, user_id: str, date: str, tz: ZoneInfo
     )
     tgts = memory.targets(conn, user_id)
     if "calories" in tgts:
-        line += f" (calorie target {tgts['calories'].num_value:g}, {t.calories - tgts['calories'].num_value:g} kcal left)"
+        line += f" (calorie target {tgts['calories'].num_value:g}, {tgts['calories'].num_value - t.calories:g} kcal left)"
     if "protein" in tgts:
         line += f" (protein target {tgts['protein'].num_value:g}g, {tgts['protein'].num_value - t.protein:g}g left)"
     return line

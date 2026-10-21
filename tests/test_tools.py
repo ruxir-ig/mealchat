@@ -82,6 +82,7 @@ def test_day_totals_with_targets(toolkit, conn):
     out = ts["day_totals"].invoke({})
     assert "600 kcal" in out
     assert "target 2000" in out
+    assert "1400 kcal left" in out  # remaining = target - eaten (regression: sign was flipped)
 
 
 def test_nutrition_lookup_builtin(toolkit):
