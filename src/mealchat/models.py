@@ -42,6 +42,8 @@ def text_llm(s: Settings, temperature: float = 0.2) -> BaseChatModel:
 def vision_llm(s: Settings, temperature: float = 0.1) -> BaseChatModel:
     # No retries: a slow vision model must hit the time budget and fall back
     # to the uncertain/ask path, not hold the turn hostage for minutes.
+    # response_format json_object is the OpenAI-standard way to force JSON;
+    # verified live against the tested gateway.
     return ChatOpenAI(
         model=s.vision_model,
         base_url=s.vision_api_base,
@@ -50,6 +52,7 @@ def vision_llm(s: Settings, temperature: float = 0.1) -> BaseChatModel:
         timeout=s.vision_timeout,
         max_retries=0,
         extra_body=_extra_body(s.vision_reasoning),
+        model_kwargs={"response_format": {"type": "json_object"}},
     )
 
 

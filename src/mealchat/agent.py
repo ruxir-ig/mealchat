@@ -159,7 +159,9 @@ class MealChatAgent:
         result = AgentResult(reply="")
         vis = None
         if image_path:
-            vis = await vision.analyze_photo(self.vision_llm, image_path)
+            vis = await vision.analyze_photo(
+                self.vision_llm, image_path, caption=(text.strip() or None)
+            )
             result.vision = vis
 
         today = datetime.now(self.settings.tz).strftime("%Y-%m-%d")

@@ -9,11 +9,26 @@ from __future__ import annotations
 
 import asyncio
 
-from mealchat.vision import analyze_photo
+from mealchat.vision import _build_prompt, analyze_photo
 
 
 def _run(llm, path):
     return asyncio.run(analyze_photo(llm, path))
+
+
+def test_prompt_without_caption_has_no_caption_rules():
+    p = _build_prompt(None)
+    assert "caption" not in p.lower()
+    assert "WHOLE visible portion" in p
+
+
+def test_prompt_with_caption_forbids_applying_fractions():
+    p = _build_prompt("half of this was my brother's")
+    assert "half of this was my brother's" in p
+    assert "WHOLE visible portion" in p
+    # the double-scaling guard must be explicit
+    assert "Do NOT apply any sharing or fraction" in p
+    assert "double-scale" in p
 
 
 def test_missing_file_is_uncertain_not_exception():

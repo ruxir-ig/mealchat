@@ -32,6 +32,20 @@ Look at this photo of food. Respond with ONLY a JSON object, no markdown, no pro
 }
 Rules: quantity covers the whole visible portion. Merge duplicates (four rotis on one plate -> one item, quantity 4). Name every distinct food — if actual food is visible but its exact type is unclear, use the best generic name (e.g. "mixed vegetable curry", "dal") rather than hedging or merging dishes. But if the image does not clearly show real food (an object, a screenshot, a solid color, a drawing, an empty plate), you MUST set uncertain=true and give the question — never invent a food for a non-food image."""
 
+_CAPTION_RULES = """
+The user's caption for this photo: "{caption}"
+Use the caption ONLY as a hint for identifying the foods. Quantities still cover
+the WHOLE visible portion. Do NOT apply any sharing or fraction from the caption
+("half of this was my brother's", "ate a third") to the quantities — the caption's
+share is applied later, by a separate step; applying it here would double-scale it."""
+
+
+def _build_prompt(caption: str | None = None) -> str:
+    prompt = _VISION_PROMPT
+    if caption:
+        prompt += _CAPTION_RULES.format(caption=caption.strip().replace('"', "'"))
+    return prompt
+
 
 @dataclass
 class VisionResult:
@@ -103,11 +117,20 @@ def _parse_json(text: str) -> dict | None:
 
 
 async def analyze_photo(
-    llm: BaseChatModel, image_path: str | Path, max_dim: int = MAX_DIM
+    llm: BaseChatModel,
+    image_path: str | Path,
+    max_dim: int = MAX_DIM,
+    caption: str | None = None,
 ) -> VisionResult:
     """One structured vision call (async — a slow photo must not block other
     users on the agent's shared event loop). Any doubt — including a missing
-    or unreadable image file — degrades to VisionResult(uncertain=True)."""
+    or unreadable image file — degrades to VisionResult(uncertain=True).
+
+    The caption (the user's text alongside the photo) is passed as an
+    identification hint ONLY: the prompt forbids applying sharing/fractions
+    from it, because the agent applies the share separately — double-scaling
+    would be a silent calorie bug.
+    """
     result = VisionResult()
     try:
         jpeg, meta = prepare_image(image_path, max_dim)
@@ -118,7 +141,7 @@ async def analyze_photo(
                 (
                     "user",
                     [
-                        {"type": "text", "text": _VISION_PROMPT},
+                        {"type": "text", "text": _build_prompt(caption)},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                     ],
                 )
