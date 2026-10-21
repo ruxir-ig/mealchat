@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mealchat</title>
+<style>
+  :root {
+    --bg: #101418; --panel: #171c22; --bubble-user: #2b6cb0; --bubble-ai: #1f262e;
+    --text: #e6e9ec; --muted: #8b98a5; --border: #262d36; --accent: #4f9cf9;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--text); height: 100dvh; display: flex; flex-direction: column; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex;
+           align-items: baseline; gap: 10px; background: var(--panel); }
+  header h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .3px; }
+  header span { color: var(--muted); font-size: 12px; }
+  main { flex: 1; overflow-y: auto; padding: 24px 16px; }
+  .col { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+  .msg { display: flex; }
+  .msg.user { justify-content: flex-end; }
+  .bubble { max-width: 78%; padding: 10px 14px; border-radius: 16px; font-size: 14.5px;
+            line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+  .msg.ai .bubble { background: var(--bubble-ai); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .msg.user .bubble { background: var(--bubble-user); border-bottom-right-radius: 4px; }
+  .bubble img { max-width: 100%; max-height: 220px; border-radius: 10px; margin-bottom: 6px; display: block; }
+  .meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .typing span { display: inline-block; width: 6px; height: 6px; margin: 0 1.5px; border-radius: 50%;
+                 background: var(--muted); animation: blink 1.2s infinite; }
+  .typing span:nth-child(2) { animation-delay: .2s; } .typing span:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+  form { display: flex; gap: 8px; padding: 14px 16px 20px; background: var(--panel);
+         border-top: 1px solid var(--border); }
+  .row { max-width: 720px; margin: 0 auto; display: flex; gap: 8px; width: 100%; align-items: center; }
+  #attach { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 10px;
+            width: 40px; height: 40px; font-size: 17px; cursor: pointer; flex: none; }
+  #attach:hover { color: var(--text); border-color: var(--muted); }
+  #text { flex: 1; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+          border-radius: 10px; padding: 10px 14px; font-size: 14.5px; outline: none; resize: none;
+          max-height: 120px; font-family: inherit; }
+  #text:focus { border-color: var(--accent); }
+  #send { background: var(--accent); color: #fff; border: none; border-radius: 10px; padding: 0 18px;
+          height: 40px; font-size: 14px; font-weight: 600; cursor: pointer; flex: none; }
+  #send:disabled { opacity: .45; cursor: default; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--bubble-ai);
+          border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font-size: 12px;
+          color: var(--muted); margin: 8px 0 0; }
+  .chip img { width: 18px; height: 18px; object-fit: cover; border-radius: 4px; }
+  .hint { text-align: center; color: var(--muted); font-size: 12.5px; padding: 8px; }
+</style>
+</head>
+<body>
+<header><h1>🥗 mealchat</h1><span>text what you ate — or send a photo</span></header>
+<main><div class="col" id="log">
+  <div class="hint">Photos go to a separate vision model · memory persists across sessions</div>
+</div></main>
+<form id="f"><div class="row">
+  <button type="button" id="attach" title="attach a photo">📎</button>
+  <textarea id="text" rows="1" placeholder="had 2 parathas and chai…"></textarea>
+  <button id="send">Send</button>
+</div></form>
+<input type="file" id="file" accept="image/*" hidden>
+
+<script>
+const log = document.getElementById('log'), form = document.getElementById('f'),
+      textEl = document.getElementById('text'), send = document.getElementById('send'),
+      fileEl = document.getElementById('file');
+let photo = null, busy = false;
+
+document.getElementById('attach').onclick = () => fileEl.click();
+fileEl.onchange = () => {
+  if (fileEl.files[0]) { photo = fileEl.files[0]; textEl.placeholder = 'caption for the photo (optional)…'; textEl.focus(); }
+};
+textEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+});
+textEl.addEventListener('input', () => {
+  textEl.style.height = 'auto'; textEl.style.height = Math.min(textEl.scrollHeight, 120) + 'px';
+});
+
+function add(cls, html) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg ' + cls;
+  wrap.innerHTML = `<div class="bubble">${html}</div>`;
+  log.appendChild(wrap);
+  document.querySelector('main').scrollTop = 1e9;
+  return wrap;
+}
+const esc = s => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+form.onsubmit = async e => {
+  e.preventDefault();
+  const text = textEl.value.trim();
+  if ((!text && !photo) || busy) return;
+  busy = true; send.disabled = true;
+
+  let userHtml = esc(text || '') ;
+  if (photo) {
+    const url = URL.createObjectURL(photo);
+    userHtml = `<img src="${url}" alt="photo">${userHtml}`;
+  }
+  add('user', userHtml);
+  textEl.value = ''; textEl.style.height = 'auto';
+  const typing = add('ai', '<span class="typing"><span></span><span></span><span></span></span>');
+
+  const fd = new FormData();
+  fd.append('text', text);
+  fd.append('user_id', 'web-user');
+  if (photo) fd.append('image', photo, photo.name);
+
+  try {
+    const r = await fetch('/api/chat', { method: 'POST', body: fd });
+    const data = await r.json();
+    typing.querySelector('.bubble').innerHTML =
+      esc(data.reply) + `<div class="meta">${(data.latency_ms / 1000).toFixed(1)}s${data.photo ? ' · photo path' : ''}</div>`;
+  } catch (err) {
+    typing.querySelector('.bubble').innerHTML = esc('(network error: ' + err.message + ')');
+  }
+  photo = null; fileEl.value = ''; textEl.placeholder = 'had 2 parathas and chai…';
+  busy = false; send.disabled = false; textEl.focus();
+};
+</script>
+</body>
+</html>
