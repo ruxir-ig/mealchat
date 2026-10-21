@@ -1,0 +1,172 @@
+"""Agent core — interface-agnostic.
+
+    agent = MealChatAgent()
+    result = agent.handle(user_id="ruchir", text="had 2 parathas and chai")
+
+The same core serves the CLI, the web UI, the evals and the latency bench.
+Control flow per turn:
+  1. (photo path) resize + one structured call to the SEPARATE vision model
+  2. build a per-turn tool set bound to (user_id, source, effects)
+  3. dynamic system prompt: base + durable memory block + today's date
+  4. LangGraph react loop with a strict correction/references policy
+  5. persist the turn (short history window), return reply + effects + timings
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.prebuilt import create_react_agent
+
+from mealchat import db, memory, models, nutrition, tools, vision
+from mealchat.config import Settings, load_settings
+
+_SYSTEM_TEMPLATE = """You are CalorAI's meal-logging assistant chatting over WhatsApp. Users text what they ate ("had 2 parathas and chai for breakfast"), send photos of their plates, make corrections, and ask about their day. You log meals, keep the day's calorie and macro totals accurate, and remember what matters about the user. You are a texting buddy with a nutrition database — warm, quick, never a form.
+
+Today is {today} ({weekday}), timezone {tz}.
+
+## What you remember about the user (durable facts — not chat history)
+{memory_block}
+
+## Logging rules
+- log_meal: one entry per food, quantity in the food's natural unit (2 rotis -> food "roti", quantity 2; two thirds of a biryani box -> food "biryani", quantity 0.67, unit "box", notes "two-thirds of a takeaway box"). Nutrition resolves automatically — do not call nutrition_lookup before a normal log.
+- After logging, confirm in ONE short line: what you logged, the meal's kcal, and today's total. State assumptions briefly in parentheses, e.g. "(assumed medium parathas)".
+- Do not log skipped meals. If the user grazed or snacked without naming foods, ask ONE short question about what they had.
+
+## Corrections — never double-log
+- "actually that was 3 rotis not 2" EDITS an existing meal: get_meals(date="today", food_like="roti") to find it, then edit_meal(meal_id, items=[the FULL corrected item list]). NEVER log a correction as a new meal.
+- "I didn't actually eat that": get_meals, then delete_meal.
+- If several meals could match a correction, ask which one — briefly.
+
+## References — resolve from data or memory, not guesswork
+- "same as yesterday": get_meals(date="yesterday"), then log the same items as new meals for today.
+- "my usual": if a usual for that meal is in your memory above, log exactly that. Otherwise get_meals(limit=10) to find the recurring meal, log it, and save_memory(kind="usual", content="...") so next time is one step.
+
+## Photos
+- The [Photo analysis] block in the user's message comes from a separate vision model. Its quantities cover the WHOLE visible portion.
+- The user's own caption beats the vision guess, especially for portions: "half of this was my brother's" -> log HALF of the vision items. A photo with a caption is ONE meal — one log_meal call.
+- If the analysis is marked UNCERTAIN, do NOT log — ask the user the suggested question instead. Never guess from an uncertain photo.
+- If your memory says the user is vegetarian and a photo or text shows meat, flag it kindly — don't silently log.
+
+## Ask vs log (where the line is)
+- LOG NOW, stating assumptions: named foods with known or standard amounts; clear photos; "same as yesterday"; "my usual"; small unknowns (estimate, note it).
+- ASK ONE short question only when: the food is unknown ("grazed all afternoon" — on what?); the portion is unknowable AND calorie-heavy; the vision analysis is uncertain; a correction is ambiguous; or a log contradicts a saved preference (confirm, never refuse).
+- Never ask twice for the same missing info.
+
+## Memory
+- Save durable facts with save_memory when the user states them: preferences ("i'm vegetarian" -> kind preference), daily targets ("aiming for 140g protein" -> kind target, key protein, value 140, unit g), usuals. Never save one-off meal details or small talk — keep memory lean.
+- Use what you remember: targets in day summaries, the vegetarian flag on meat logs, usuals for "my usual".
+
+## Style
+- Reply like a text message: under ~35 words, friendly, no bullet lists unless asked, kcal. Round numbers.
+- "how am I doing today?" / "how much protein have I had?" -> day_totals; answer quick and specific, compare against targets when they exist."""
+
+
+@dataclass
+class AgentResult:
+    reply: str
+    vision: vision.VisionResult | None = None
+    effects: dict = field(default_factory=dict)
+    latency_ms: float = 0.0
+    vision_ms: float = 0.0
+    agent_ms: float = 0.0
+    tool_calls: int = 0
+
+    @property
+    def photo_path(self) -> bool:
+        return self.vision is not None
+
+
+class MealChatAgent:
+    def __init__(self, settings: Settings | None = None):
+        self.settings = settings or load_settings()
+        self.conn = db.connect(self.settings.db_path)
+        db.init_db(self.conn)
+        self.text_llm = models.text_llm(self.settings)
+        self.vision_llm = models.vision_llm(self.settings)
+        # estimator = same text model, temperature 0 — nutrition numbers shouldn't be creative
+        self.estimator = models.make_estimator(models.text_llm(self.settings, temperature=0.0))
+
+    # ------------------------------------------------------------------ core
+
+    async def handle_async(
+        self, user_id: str, text: str, image_path: str | None = None
+    ) -> AgentResult:
+        t0 = time.perf_counter()
+        result = AgentResult(reply="")
+        vis = None
+        if image_path:
+            vis = vision.analyze_photo(self.vision_llm, image_path)
+            result.vision = vis
+
+        today = datetime.now(self.settings.tz).strftime("%Y-%m-%d")
+        source = "image" if image_path else "text"
+        effects: dict = {}
+        tool_set = tools.build_tools(
+            self.conn, self.settings.tz, self.estimator, user_id, source, effects
+        )
+
+        system = self._system_prompt(user_id, today)
+        history = self._history(user_id)
+        human_content = (text.strip() or "(photo, no caption)") if image_path else text
+        if vis is not None:
+            human_content = f"{human_content}\n\n{vis.prompt_block()}"
+        input_msgs = [SystemMessage(system), *history, HumanMessage(human_content)]
+
+        t_agent0 = time.perf_counter()
+        graph = create_react_agent(self.text_llm, tool_set)
+        state = await graph.ainvoke(
+            {"messages": input_msgs}, config={"recursion_limit": 12}
+        )
+        result.agent_ms = (time.perf_counter() - t_agent0) * 1000
+        result.vision_ms = (
+            (t_agent0 - t0) * 1000 if image_path else 0.0
+        )
+
+        msgs = state.get("messages", [])
+        result.tool_calls = sum(1 for m in msgs if isinstance(m, ToolMessage))
+        reply = ""
+        for m in reversed(msgs):
+            if isinstance(m, AIMessage):
+                content = m.content
+                reply = content if isinstance(content, str) else "".join(
+                    getattr(p, "text", "") or "" for p in content
+                )
+                if reply.strip():
+                    break
+        result.reply = (reply or "Done — anything else?").strip()
+        result.effects = effects
+        result.latency_ms = (time.perf_counter() - t0) * 1000
+
+        db.add_message(self.conn, user_id, "user", human_content[:500])
+        db.add_message(self.conn, user_id, "assistant", result.reply[:500])
+        return result
+
+    def handle(self, user_id: str, text: str, image_path: str | None = None) -> AgentResult:
+        """Sync wrapper — the stable core interface used by CLI/bench/evals."""
+        return asyncio.run(self.handle_async(user_id, text, image_path))
+
+    # ------------------------------------------------------------- internals
+
+    def _system_prompt(self, user_id: str, today: str) -> str:
+        block = memory.memory_block(self.conn, user_id)
+        return _SYSTEM_TEMPLATE.format(
+            today=today,
+            weekday=datetime.now(self.settings.tz).strftime("%A"),
+            tz=self.settings.timezone,
+            memory_block=block or "(nothing saved yet — pick up preferences and targets as they come up)",
+        )
+
+    def _history(self, user_id: str, limit: int = 8) -> list:
+        """Last few turns ONLY — conversational context, explicitly not memory."""
+        out = []
+        for m in db.recent_messages(self.conn, user_id, limit):
+            if m["role"] == "user":
+                out.append(HumanMessage(m["content"]))
+            elif m["role"] == "assistant":
+                out.append(AIMessage(m["content"]))
+        return out
