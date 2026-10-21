@@ -15,8 +15,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PIL import Image, ImageOps
 from langchain_core.language_models.chat_models import BaseChatModel
+from PIL import Image, ImageOps
 
 MAX_DIM = 1024  # longest side sent to the vision model
 JPEG_QUALITY = 85
@@ -150,7 +150,7 @@ def analyze_photo(
         result.question = data.get("question") or None
         if "single_serving" in data:
             result.meta["single_serving"] = bool(data["single_serving"])
-    except Exception as e:  # network/parse failure -> ask, never guess
+    except Exception as e:  # noqa: BLE001 — any failure degrades to "ask the user", never a crash
         result.uncertain = True
         result.question = "I couldn't analyze that photo — what did you eat?"
         result.description = f"(vision call failed: {e})"

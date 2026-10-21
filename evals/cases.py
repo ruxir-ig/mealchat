@@ -11,8 +11,8 @@ a list of failures — empty list = pass.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from mealchat import db
 
@@ -156,8 +156,8 @@ CASES.append(
 
 
 def seed_same_as_yesterday(conn, user_id):
-    from zoneinfo import ZoneInfo
     from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
 
     tz = ZoneInfo("Asia/Kolkata")
     yday = (datetime.now(tz) - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -176,8 +176,8 @@ def seed_same_as_yesterday(conn, user_id):
 
 def check_same_as_yesterday(conn, user_id, replies):
     fails = []
-    from zoneinfo import ZoneInfo
     from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
 
     tz = ZoneInfo("Asia/Kolkata")
     today = datetime.now(tz).strftime("%Y-%m-%d")

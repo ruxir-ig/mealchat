@@ -23,7 +23,7 @@ from datetime import datetime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
-from mealchat import db, memory, models, nutrition, tools, vision
+from mealchat import db, memory, models, tools, vision
 from mealchat.config import Settings, load_settings
 
 _SYSTEM_TEMPLATE = """You are CalorAI's meal-logging assistant chatting over WhatsApp. Users text what they ate ("had 2 parathas and chai for breakfast"), send photos of their plates, make corrections, and ask about their day. You log meals, keep the day's calorie and macro totals accurate, and remember what matters about the user. You are a texting buddy with a nutrition database — warm, quick, never a form.

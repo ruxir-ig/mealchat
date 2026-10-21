@@ -15,11 +15,9 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from mealchat import db
+from evals.cases import CASES
 from mealchat.agent import MealChatAgent
 from mealchat.config import load_settings
-
-from evals.cases import CASES
 
 
 def run(selected: list[str] | None = None) -> int:

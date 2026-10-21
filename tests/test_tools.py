@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from mealchat import db, memory, tools
+from mealchat import db, memory
 from mealchat.tools import build_tools
 
 TZ = ZoneInfo("Asia/Kolkata")
@@ -40,7 +40,7 @@ def test_log_meal_and_totals(toolkit, conn):
 
 
 def test_get_meals_food_filter(toolkit):
-    ts, _ = toolkit
+    ts, _effects = toolkit
     ts["log_meal"].invoke({"items": [{"food": "roti", "quantity": 2}]})
     ts["log_meal"].invoke({"items": [{"food": "chai", "quantity": 1}]})
     out = ts["get_meals"].invoke({"food_like": "roti"})
@@ -49,7 +49,7 @@ def test_get_meals_food_filter(toolkit):
 
 
 def test_edit_meal_replaces_not_adds(toolkit, conn):
-    ts, effects = toolkit
+    ts, _effects = toolkit
     ts["log_meal"].invoke({"items": [{"food": "roti", "quantity": 2}]})
     out = ts["edit_meal"].invoke({"meal_id": 1, "items": [{"food": "roti", "quantity": 3}]})
     assert "Updated meal #1" in out
