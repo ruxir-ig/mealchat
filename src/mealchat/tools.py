@@ -291,4 +291,29 @@ def build_tools(
         effects.setdefault("memories", []).append(f"{kind}:{content[:60]}")
         return f"Remembered ({kind}): {content}"
 
-    return [log_meal, get_meals, edit_meal, delete_meal, day_totals, nutrition_lookup, save_memory]
+    @tool
+    def forget_memory(search: str) -> str:
+        """Remove a saved memory about the user. Use when the user corrects or
+        retracts a durable fact ('not vegetarian anymore', 'new protein
+        target is 160g') so outdated facts don't pile up — call this first,
+        then save_memory the replacement if there is one.
+
+        search: substring of the memory to forget, e.g. 'vegetarian', 'usual',
+        or a target key like 'protein'.
+        """
+        s = search.strip().lower()
+        if not s:
+            return "Error: give me part of the memory text to forget."
+        hits = [
+            m
+            for m in db.get_memories(conn, user_id)
+            if s in m.content.lower() or (m.key or "").lower() == s
+        ]
+        if not hits:
+            return f"Nothing remembered matching {search!r}."
+        for m in hits:
+            db.forget_memory(conn, m.id)
+        effects.setdefault("forgotten", []).extend(m.content for m in hits)
+        return "Forgot: " + "; ".join(f"{m.kind}: {m.content}" for m in hits)
+
+    return [log_meal, get_meals, edit_meal, delete_meal, day_totals, nutrition_lookup, save_memory, forget_memory]

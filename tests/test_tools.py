@@ -104,6 +104,25 @@ def test_save_memory_renders_in_block(toolkit, conn):
     assert "target protein: 140g" in block
 
 
+def test_forget_memory_removes_without_touching_others(toolkit, conn):
+    ts, effects = toolkit
+    ts["save_memory"].invoke({"kind": "preference", "content": "vegetarian"})
+    ts["save_memory"].invoke({"kind": "preference", "content": "no eggs"})
+    out = ts["forget_memory"].invoke({"search": "vegetarian"})
+    assert "Forgot" in out and "vegetarian" in out and "no eggs" not in out
+    contents = [m.content for m in db.get_memories(conn, "u1")]
+    assert "vegetarian" not in contents and "no eggs" in contents
+    assert "vegetarian" in effects.get("forgotten", [])
+
+    # target keys are forgettable too
+    ts["save_memory"].invoke(
+        {"kind": "target", "content": "2000 kcal daily", "key": "calories", "value": 2000}
+    )
+    out = ts["forget_memory"].invoke({"search": "calories"})
+    assert "calories" in out
+    assert all(m.key != "calories" for m in db.get_memories(conn, "u1"))
+
+
 def test_bad_date_returns_error(toolkit):
     ts, _ = toolkit
     out = ts["log_meal"].invoke({"items": [{"food": "roti", "quantity": 1}], "date": "tomorrow"})
