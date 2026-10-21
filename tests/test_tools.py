@@ -173,6 +173,36 @@ def test_forget_memory_removes_without_touching_others(toolkit, conn):
     assert all(m.key != "calories" for m in db.get_memories(conn, "u1"))
 
 
+def test_meal_type_inferred_from_clock(toolkit, conn):
+    """No meal_type given -> filled from the local hour, not left blank."""
+    ts, _ = toolkit
+    ts["log_meal"].invoke({"items": [{"food": "roti", "quantity": 1}]})
+    meals = db.get_meals(conn, "u1")
+    assert meals[0].meal_type in ("breakfast", "lunch", "dinner", "snack")
+
+
+def test_meal_type_bands():
+    from mealchat.tools import _meal_type_for_hour
+
+    assert _meal_type_for_hour(8) == "breakfast"
+    assert _meal_type_for_hour(13) == "lunch"
+    assert _meal_type_for_hour(17) == "snack"
+    assert _meal_type_for_hour(20) == "dinner"
+    assert _meal_type_for_hour(1) == "snack"  # late night
+    assert _meal_type_for_hour(23) == "snack"
+    assert _meal_type_for_hour(5) == "breakfast"
+    assert _meal_type_for_hour(11) == "lunch"
+    assert _meal_type_for_hour(19) == "dinner"
+
+
+def test_explicit_meal_type_not_overridden(toolkit, conn):
+    ts, _ = toolkit
+    ts["log_meal"].invoke(
+        {"items": [{"food": "roti", "quantity": 1}], "meal_type": "dinner"}
+    )
+    assert db.get_meals(conn, "u1")[0].meal_type == "dinner"
+
+
 def test_bad_date_returns_error(toolkit):
     ts, _ = toolkit
     out = ts["log_meal"].invoke({"items": [{"food": "roti", "quantity": 1}], "date": "tomorrow"})

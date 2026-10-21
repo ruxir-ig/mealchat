@@ -28,6 +28,19 @@ from mealchat.models import FoodEstimator
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MEAL_TYPES = ("breakfast", "lunch", "dinner", "snack")
 
+
+def _meal_type_for_hour(hour: int) -> str:
+    """Infer the meal type from the local hour when the user didn't say."""
+    if 5 <= hour < 11:
+        return "breakfast"
+    if 11 <= hour < 16:
+        return "lunch"
+    if 16 <= hour < 19:
+        return "snack"
+    if 19 <= hour < 23:
+        return "dinner"
+    return "snack"  # late night / early morning grazing
+
 # Sanity caps: a single logged item or whole meal above these is almost
 # certainly a mis-parsed quantity — make the agent confirm instead of logging.
 MAX_ITEM_KCAL = 2500
@@ -128,6 +141,8 @@ def build_tools(
         mtype = meal_type.strip().lower() if meal_type else ""
         if mtype not in _MEAL_TYPES:
             mtype = ""
+        if not mtype:
+            mtype = _meal_type_for_hour(datetime.now(tz).hour)  # from the clock
         try:
             share = float(portion)
         except (TypeError, ValueError):
