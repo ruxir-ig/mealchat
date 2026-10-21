@@ -414,16 +414,7 @@ def build_tools(
             est = estimator([food])
             row = est.get(nutrition.normalize(food)) or est.get(food.lower().strip())
             if row:
-                f = db.Food(
-                    key=nutrition.normalize(food),
-                    name=food.strip(),
-                    unit=str(row.get("unit", "serving")),
-                    calories=float(row.get("calories", 0)),
-                    protein=float(row.get("protein", 0)),
-                    carbs=float(row.get("carbs", 0)),
-                    fat=float(row.get("fat", 0)),
-                    source="llm",
-                )
+                f = nutrition.food_from_estimate(food, row)
                 db.upsert_food(conn, f)
         if f is None:
             return f"No data for {food!r}."

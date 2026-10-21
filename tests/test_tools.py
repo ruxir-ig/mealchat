@@ -234,6 +234,25 @@ def test_nutrition_lookup_builtin(toolkit):
     assert "180 kcal" in out
 
 
+def test_nutrition_lookup_caches_grams_per_unit(conn):
+    """A lookup-then-log must convert grams exactly like a direct log: the
+    lookup's cache row used to drop grams_per_unit, so 10 g of a 150 g
+    serving logged as 10 servings (2000 kcal) instead of ~13 kcal."""
+
+    def fake_estimator(foods):
+        return {
+            f.lower(): {"food": f, "unit": "serving", "calories": 200, "protein": 5,
+                        "carbs": 30, "fat": 6, "grams_per_unit": 150}
+            for f in foods
+        }
+
+    ts = {t.name: t for t in build_tools(conn, TZ, fake_estimator, "u1", "text", {})}
+    ts["nutrition_lookup"].invoke({"food": "ragi mudde"})
+    assert db.get_food(conn, "ragi mudde").grams_per_unit == 150
+    ts["log_meal"].invoke({"items": [{"food": "ragi mudde", "quantity": 10, "unit": "g"}]})
+    assert db.day_totals(conn, "u1", db.local_today(TZ)).calories == pytest.approx(13.3, abs=0.1)
+
+
 def test_save_memory_renders_in_block(toolkit, conn):
     ts, _ = toolkit
     ts["save_memory"].invoke({"kind": "preference", "content": "vegetarian"})

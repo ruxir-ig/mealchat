@@ -243,6 +243,24 @@ def _effective_quantity(
     return qty, unit, note
 
 
+def food_from_estimate(name: str, est: dict) -> db.Food:
+    """One estimator row -> a cacheable Food. The single place estimates are
+    turned into cache rows, so every path keeps grams_per_unit."""
+    return db.Food(
+        key=normalize(name),
+        name=name.strip(),
+        unit=str(est.get("unit", "serving")),
+        calories=float(est.get("calories", _FALLBACK[1])),
+        protein=float(est.get("protein", _FALLBACK[2])),
+        carbs=float(est.get("carbs", _FALLBACK[3])),
+        fat=float(est.get("fat", _FALLBACK[4])),
+        source="llm",
+        grams_per_unit=(
+            float(est["grams_per_unit"]) if est.get("grams_per_unit") is not None else None
+        ),
+    )
+
+
 def resolve_items(
     conn: sqlite3.Connection,
     items: list[FoodItem],
@@ -267,21 +285,7 @@ def resolve_items(
                 item.food.lower().strip()
             )
             if est:
-                food = db.Food(
-                    key=normalize(item.food),
-                    name=item.food.strip(),
-                    unit=str(est.get("unit", "serving")),
-                    calories=float(est.get("calories", _FALLBACK[1])),
-                    protein=float(est.get("protein", _FALLBACK[2])),
-                    carbs=float(est.get("carbs", _FALLBACK[3])),
-                    fat=float(est.get("fat", _FALLBACK[4])),
-                    source="llm",
-                    grams_per_unit=(
-                        float(est["grams_per_unit"])
-                        if est.get("grams_per_unit") is not None
-                        else None
-                    ),
-                )
+                food = food_from_estimate(item.food, est)
                 db.upsert_food(conn, food)  # cache: estimated only once
                 qty, unit, note = _effective_quantity(item, food, food.grams_per_unit)
                 resolved.append(_scale(item, food, qty, unit, note))
