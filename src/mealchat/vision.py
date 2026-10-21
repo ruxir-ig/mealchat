@@ -102,15 +102,16 @@ def _parse_json(text: str) -> dict | None:
         return None
 
 
-def analyze_photo(
+async def analyze_photo(
     llm: BaseChatModel, image_path: str | Path, max_dim: int = MAX_DIM
 ) -> VisionResult:
-    """One structured vision call. Any doubt -> VisionResult(uncertain=True)."""
+    """One structured vision call (async — a slow photo must not block other
+    users on the agent's shared event loop). Any doubt -> VisionResult(uncertain=True)."""
     jpeg, meta = prepare_image(image_path, max_dim)
     b64 = base64.b64encode(jpeg).decode()
     result = VisionResult(meta=meta)
     try:
-        msg = llm.invoke(
+        msg = await llm.ainvoke(
             [
                 (
                     "user",
