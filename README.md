@@ -47,6 +47,7 @@ cp .env.example .env          # then edit MEALCHAT_API_KEY (and models if you wa
 | `MEALCHAT_VISION_MODEL` | `gpt-4o` | must accept image input, must be a **different** model |
 | `MEALCHAT_TEXT_REASONING` / `MEALCHAT_VISION_REASONING` | *(empty)* | optional `reasoning_effort`; only sent when set — most chat-completions models reject the param, so leave blank unless yours supports it |
 | `MEALCHAT_VISION_API_BASE` / `MEALCHAT_VISION_API_KEY` | same gateway | optional separate route for vision |
+| `MEALCHAT_VISION_TIMEOUT` | `20` | hard seconds-budget for one vision call; on timeout the agent asks the user instead of waiting |
 | `MEALCHAT_TIMEZONE` | `Asia/Kolkata` | local date for "today" boundaries |
 | `MEALCHAT_DB` | `data/mealchat.db` | SQLite file |
 

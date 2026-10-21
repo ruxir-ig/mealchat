@@ -40,13 +40,15 @@ def text_llm(s: Settings, temperature: float = 0.2) -> BaseChatModel:
 
 
 def vision_llm(s: Settings, temperature: float = 0.1) -> BaseChatModel:
+    # No retries: a slow vision model must hit the time budget and fall back
+    # to the uncertain/ask path, not hold the turn hostage for minutes.
     return ChatOpenAI(
         model=s.vision_model,
         base_url=s.vision_api_base,
         api_key=s.vision_api_key,
         temperature=temperature,
-        timeout=120,
-        max_retries=1,
+        timeout=s.vision_timeout,
+        max_retries=0,
         extra_body=_extra_body(s.vision_reasoning),
     )
 

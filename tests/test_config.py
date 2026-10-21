@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 
+from mealchat import models
 from mealchat.config import load_settings
 from mealchat.models import _extra_body
 
@@ -21,6 +22,16 @@ def test_defaults_are_standard_public_models(monkeypatch, tmp_path):
     assert s.vision_model == "gpt-4o"
     assert s.text_model != s.vision_model, "text and vision must be different models"
     assert s.text_reasoning == "" and s.vision_reasoning == ""
+
+
+def test_vision_time_budget_is_bounded():
+    """The vision client gets a short hard timeout and zero retries — a slow
+    vision model must fall back to the uncertain/ask path, not stall."""
+    s = load_settings()
+    assert s.vision_timeout == 20.0
+    vlm = models.vision_llm(s)
+    assert vlm.max_retries == 0
+    assert vlm.request_timeout == 20.0
 
 
 def test_extra_body_only_sent_when_configured():

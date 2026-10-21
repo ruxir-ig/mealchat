@@ -36,6 +36,7 @@ class Settings:
     vision_reasoning: str
     vision_api_base: str
     vision_api_key: str
+    vision_timeout: float
     timezone: str
     db_path: str
 
@@ -62,6 +63,9 @@ def load_settings() -> Settings:
         vision_api_base=os.environ.get("MEALCHAT_VISION_API_BASE", "") or api_base,
         vision_api_key=os.environ.get("MEALCHAT_VISION_API_KEY", "")
         or os.environ.get("MEALCHAT_API_KEY", ""),
+        # hard time budget for the vision call: on timeout we degrade to the
+        # uncertain/ask path instead of holding the turn (or the whole agent)
+        vision_timeout=float(os.environ.get("MEALCHAT_VISION_TIMEOUT", "20")),
         timezone=os.environ.get("MEALCHAT_TIMEZONE", "Asia/Kolkata"),
         db_path=os.environ.get("MEALCHAT_DB", "data/mealchat.db"),
     )
