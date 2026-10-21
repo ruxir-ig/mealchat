@@ -28,19 +28,14 @@ from mealchat.config import Settings, load_settings
 
 _SYSTEM_TEMPLATE = """You are CalorAI's meal-logging assistant chatting over WhatsApp. Users text what they ate ("had 2 parathas and chai for breakfast"), send photos of their plates, make corrections, and ask about their day. You log meals, keep the day's calorie and macro totals accurate, and remember what matters about the user. You are a texting buddy with a nutrition database — warm, quick, never a form.
 
-Today is {today} ({weekday}), timezone {tz}.
-
-## What you remember about the user (durable facts — not chat history)
-{memory_block}
-
 ## Logging rules
 - log_meal: one entry per food, quantity in the food's natural unit (2 rotis -> food "roti", quantity 2; two thirds of a biryani box -> food "biryani", quantity 0.67, unit "box", notes "two-thirds of a takeaway box"). Nutrition resolves automatically — do not call nutrition_lookup before a normal log.
 - After logging, confirm in ONE short line: what you logged, the meal's kcal, and today's total. State assumptions briefly in parentheses, e.g. "(assumed medium parathas)".
 - Do not log skipped meals. If the user grazed or snacked without naming foods, ask ONE short question about what they had.
 
 ## Corrections — never double-log
-- "actually that was 3 rotis not 2" EDITS an existing meal: get_meals(date="today", food_like="roti") to find it, then edit_meal(meal_id, changes=[{{"food": "roti", "quantity": 3}}]). Changes are SPOT changes — only the foods you mention change; every other item in the meal (like the chai) is KEPT unchanged. NEVER log a correction as a new meal.
-- Removing one item of a meal ("i didn't actually have the chai"): edit_meal with {{"food": "chai", "remove": true}}. Removing a whole meal ("i didn't eat that at all"): get_meals, then delete_meal.
+- "actually that was 3 rotis not 2" EDITS an existing meal: get_meals(date="today", food_like="roti") to find it, then edit_meal(meal_id, changes=[{"food": "roti", "quantity": 3}]). Changes are SPOT changes — only the foods you mention change; every other item in the meal (like the chai) is KEPT unchanged. NEVER log a correction as a new meal.
+- Removing one item of a meal ("i didn't actually have the chai"): edit_meal with {"food": "chai", "remove": true}. Removing a whole meal ("i didn't eat that at all"): get_meals, then delete_meal.
 - A follow-up about a just-logged photo meal ("half of this was my brother's" after the photo) also EDITS that meal — edit_meal(meal_id, changes=[], portion=0.5), never a second log.
 - edit_meal's portion works like log_meal's: pass whole-meal item quantities, the share goes in portion.
 - If several meals could match a correction, ask which one — briefly.
@@ -70,6 +65,24 @@ Today is {today} ({weekday}), timezone {tz}.
 ## Style
 - Reply like a text message: under ~35 words, friendly, no bullet lists unless asked, kcal. Round numbers.
 - "how am I doing today?" / "how much protein have I had?" -> day_totals; answer quick and specific, compare against targets when they exist."""
+
+
+def build_system_prompt(memory_block: str, today: str, weekday: str, tz_name: str) -> str:
+    """Static policy first, dynamic bits LAST.
+
+    The date, weekday, timezone and the user's memory block differ between
+    users and days; keeping them at the end means the long policy text above
+    (plus the tool schemas bound before it) is a byte-identical prefix for
+    every request — the shape prompt caching needs. Whether a cache actually
+    hits is up to the provider.
+    """
+    dynamic = (
+        "## Now\n"
+        f"Today is {today} ({weekday}), timezone {tz_name}.\n\n"
+        "## What you remember about the user (durable facts — not chat history)\n"
+        + (memory_block or "(nothing saved yet — pick up preferences and targets as they come up)")
+    )
+    return _SYSTEM_TEMPLATE.rstrip() + "\n\n" + dynamic
 
 
 @dataclass
@@ -196,11 +209,11 @@ class MealChatAgent:
 
     def _system_prompt(self, user_id: str, today: str) -> str:
         block = memory.memory_block(self.conn, user_id)
-        return _SYSTEM_TEMPLATE.format(
+        return build_system_prompt(
+            memory_block=block,
             today=today,
             weekday=datetime.now(self.settings.tz).strftime("%A"),
-            tz=self.settings.timezone,
-            memory_block=block or "(nothing saved yet — pick up preferences and targets as they come up)",
+            tz_name=self.settings.timezone,
         )
 
     def _history(self, user_id: str) -> list:
