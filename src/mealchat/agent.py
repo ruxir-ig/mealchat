@@ -18,7 +18,7 @@ import asyncio
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
@@ -85,6 +85,12 @@ class AgentResult:
     @property
     def photo_path(self) -> bool:
         return self.vision is not None
+
+
+# Chat history is short-lived context: cap both how many turns and how old
+# they can be. Anything durable belongs in memories, not here.
+HISTORY_MAX_MESSAGES = 8
+HISTORY_WINDOW_SECONDS = 3 * 60 * 60
 
 
 class MealChatAgent:
@@ -185,10 +191,16 @@ class MealChatAgent:
             memory_block=block or "(nothing saved yet — pick up preferences and targets as they come up)",
         )
 
-    def _history(self, user_id: str, limit: int = 8) -> list:
-        """Last few turns ONLY — conversational context, explicitly not memory."""
+    def _history(self, user_id: str) -> list:
+        """Turns from the last 3 hours ONLY (capped count) — conversational
+        context, explicitly not memory. Old turns drop out on purpose."""
+        cutoff = (
+            datetime.now().astimezone() - timedelta(seconds=HISTORY_WINDOW_SECONDS)
+        ).isoformat(timespec="seconds")
         out = []
-        for m in db.recent_messages(self.conn, user_id, limit):
+        for m in db.recent_messages(
+            self.conn, user_id, limit=HISTORY_MAX_MESSAGES, since=cutoff
+        ):
             if m["role"] == "user":
                 out.append(HumanMessage(m["content"]))
             elif m["role"] == "assistant":

@@ -559,9 +559,20 @@ def add_message(conn: sqlite3.Connection, user_id: str, role: str, content: str)
 
 
 @_locked
-def recent_messages(conn: sqlite3.Connection, user_id: str, limit: int = 8) -> list[dict]:
-    rows = conn.execute(
-        "SELECT role, content FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT ?",
-        (user_id, limit),
-    ).fetchall()
+def recent_messages(
+    conn: sqlite3.Connection,
+    user_id: str,
+    limit: int = 8,
+    since: str | None = None,
+) -> list[dict]:
+    """Most recent turns, oldest first. `since` (ISO timestamp) drops older
+    messages — chat history is short-lived context, not a growing transcript."""
+    q = "SELECT role, content FROM messages WHERE user_id = ?"
+    params: list = [user_id]
+    if since is not None:
+        q += " AND created_at >= ?"
+        params.append(since)
+    q += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(q, params).fetchall()
     return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]

@@ -6,7 +6,7 @@ The design (spelled out in the README):
 - they're written explicitly by the agent via the save_memory tool, only when
   a fact is worth keeping across sessions;
 - retrieval = one SQLite query per turn, rendered into a capped block
-  (targets first, then preferences, then usuals, then the newest notes),
+  (preferences first, then targets, then usuals, then the newest notes),
   a few hundred tokens at most. Chat history is capped separately and is
   context, not memory.
 """

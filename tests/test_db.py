@@ -111,3 +111,20 @@ def test_recent_messages_order_and_limit(conn):
         db.add_message(conn, "u1", "user", f"m{i}")
     msgs = db.recent_messages(conn, "u1", limit=4)
     assert [m["content"] for m in msgs] == ["m6", "m7", "m8", "m9"]
+
+
+def test_recent_messages_time_window(conn):
+    from datetime import datetime, timedelta
+
+    db.add_message(conn, "u1", "user", "fresh")
+    # a message from 4 hours ago, inserted with an old timestamp directly
+    old = (datetime.now().astimezone() - timedelta(hours=4)).isoformat(timespec="seconds")
+    with conn:
+        conn.execute(
+            "INSERT INTO messages (user_id, role, content, created_at) VALUES (?, 'user', 'stale', ?)",
+            ("u1", old),
+        )
+    cutoff = (datetime.now().astimezone() - timedelta(seconds=3 * 3600)).isoformat(timespec="seconds")
+    assert [m["content"] for m in db.recent_messages(conn, "u1", since=cutoff)] == ["fresh"]
+    # without a window both are returned (bounded by the limit as before)
+    assert [m["content"] for m in db.recent_messages(conn, "u1")] == ["stale", "fresh"]
