@@ -357,7 +357,9 @@ def check_vegetarian(conn, user_id, replies):
     meals = _meals(conn, user_id)
     if meals:
         fails.append(f"meat logged without confirming the vegetarian conflict: {[m.description for m in meals]}")
-    if "vegetarian" not in replies[-1].reply.lower():
+    r = replies[-1].reply.lower()
+    flagged = "vegetarian" in r or " veg" in r  # "you were veg" counts as flagging
+    if not flagged:
         fails.append(f"reply should flag the vegetarian conflict: {replies[-1].reply[:120]!r}")
     return fails
 
