@@ -126,5 +126,5 @@ def test_recent_messages_time_window(conn):
         )
     cutoff = (datetime.now().astimezone() - timedelta(seconds=3 * 3600)).isoformat(timespec="seconds")
     assert [m["content"] for m in db.recent_messages(conn, "u1", since=cutoff)] == ["fresh"]
-    # without a window both are returned (bounded by the limit as before)
-    assert [m["content"] for m in db.recent_messages(conn, "u1")] == ["stale", "fresh"]
+    # without a window both are returned, ordered by turn sequence (id)
+    assert [m["content"] for m in db.recent_messages(conn, "u1")] == ["fresh", "stale"]
