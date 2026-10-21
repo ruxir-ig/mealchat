@@ -68,6 +68,13 @@ const log = document.getElementById('log'), form = document.getElementById('f'),
       fileEl = document.getElementById('file');
 let photo = null, busy = false;
 
+// per-browser user id — meals/memory stay isolated per visitor, no shared account
+const uid = (() => {
+  let id = localStorage.getItem('mealchat_uid');
+  if (!id) { id = 'web-' + crypto.randomUUID(); localStorage.setItem('mealchat_uid', id); }
+  return id;
+})();
+
 document.getElementById('attach').onclick = () => fileEl.click();
 fileEl.onchange = () => {
   if (fileEl.files[0]) { photo = fileEl.files[0]; textEl.placeholder = 'caption for the photo (optional)…'; textEl.focus(); }
@@ -106,7 +113,7 @@ form.onsubmit = async e => {
 
   const fd = new FormData();
   fd.append('text', text);
-  fd.append('user_id', 'web-user');
+  fd.append('user_id', uid);
   if (photo) fd.append('image', photo, photo.name);
 
   try {
