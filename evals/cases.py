@@ -507,6 +507,65 @@ CASES.append(
 )
 
 
+def check_delete_item(conn, user_id, replies):
+    fails = []
+    meals = _meals(conn, user_id)
+    if len(meals) != 1:
+        fails.append(f"removing one item must keep the meal, got {len(meals)} meals")
+        return fails
+    items = {i.food: i.quantity for i in meals[0].items}
+    if "chai" in items:
+        fails.append(f"the chai should be removed, items: {items}")
+    if items.get("roti") != 2:
+        fails.append(f"the rotis must survive the removal, items: {items}")
+    t = _totals(conn, user_id)
+    if t.calories != 240:  # 2 rotis (240) + chai (90) = 330, minus the chai = 240
+        fails.append(f"totals should drop by exactly 90 (the chai) to 240, got {t.calories}")
+    if "edited" not in replies[-1].effects:
+        fails.append(f"single-item removal should go through edit_meal, effects: {replies[-1].effects}")
+    return fails
+
+
+CASES.append(
+    EvalCase(
+        name="delete_item_from_meal",
+        correct_is="'i didn't actually have the chai' removes ONLY the chai: rotis kept, totals drop by 90, same meal edited",
+        turns=[
+            ("had 2 rotis and chai for lunch", None),
+            ("i didn't actually have the chai", None),
+        ],
+        check=check_delete_item,
+    )
+)
+
+
+def check_grazing_follow_up(conn, user_id, replies):
+    fails = []
+    if "?" not in replies[0].reply:
+        fails.append(f"turn 1 should ask what the grazing was: {replies[0].reply[:100]!r}")
+    meals = _meals(conn, user_id)
+    if not meals:
+        fails.append("after naming the foods, the grazing should be logged")
+        return fails
+    foods = " ".join(i.food.lower() for m in meals for i in m.items)
+    if "chips" not in foods or "samosa" not in foods:
+        fails.append(f"expected chips + samosa logged, got: {foods!r}")
+    return fails
+
+
+CASES.append(
+    EvalCase(
+        name="grazing_follow_up_answer",
+        correct_is="grazing asks on turn 1; naming the foods ('some chips and a samosa') logs them on turn 2",
+        turns=[
+            ("skipped lunch but grazed all afternoon", None),
+            ("some chips and a samosa", None),
+        ],
+        check=check_grazing_follow_up,
+    )
+)
+
+
 def check_photo_asks(conn, user_id, replies):
     fails = []
     meals = _meals(conn, user_id)
