@@ -371,6 +371,21 @@ def test_usual_saved_with_structured_items_roundtrip(toolkit, conn):
     assert "items: paratha x2, chai x1" in block
 
 
+def test_usual_items_render_with_units(toolkit, conn):
+    """The unit is part of the usual: 'rice x1 [100 g]' (~83 kcal) replayed
+    without its unit becomes 1 cup of rice (200 kcal)."""
+    ts, _ = toolkit
+    ts["save_memory"].invoke(
+        {
+            "kind": "usual",
+            "content": "rice for breakfast",
+            "key": "breakfast",
+            "items": [{"food": "rice", "quantity": 1, "unit": "100 g"}],
+        }
+    )
+    assert "items: rice x1 [100 g]" in memory.memory_block(conn, "u1")
+
+
 def test_repeat_meals_copies_exactly(toolkit, conn):
     ts, effects = toolkit
     old_today = (datetime.now(TZ) - timedelta(days=1)).strftime("%Y-%m-%d")

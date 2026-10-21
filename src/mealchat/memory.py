@@ -59,7 +59,11 @@ def _items_suffix(m: db.Memory) -> str:
     for it in items:
         if isinstance(it, dict) and it.get("food"):
             try:
-                parts.append(f"{it['food']} x{float(it.get('quantity', 1)):g}")
+                unit = (it.get("unit") or "").strip()
+                # the unit is part of the fact — '1 [100 g]' and '1 [plate]' differ
+                parts.append(
+                    f"{it['food']} x{float(it.get('quantity', 1)):g}" + (f" [{unit}]" if unit else "")
+                )
             except (TypeError, ValueError):
                 parts.append(str(it.get("food")))
     return f" — items: {', '.join(parts)}" if parts else ""
