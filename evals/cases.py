@@ -25,6 +25,10 @@ THALI = "fixtures/photos/Indian_thali.jpg"  # multi-bowl thali (used for the cap
 PLATE = "fixtures/photos/Chapati.jpg"  # clean single plate of rotis
 NOT_FOOD = "fixtures/photos/not_food.jpg"  # laptop keyboard
 
+# eval-runner marker: start a NEW MealChatAgent on the same DB with the user's
+# chat history deleted — anything that survives is memory, not history
+NEW_SESSION = "__new_session__"
+
 
 @dataclass
 class EvalCase:
@@ -520,5 +524,132 @@ CASES.append(
         correct_is="a photo the vision model can't identify -> nothing logged, user asked instead of guessed",
         turns=[("", NOT_FOOD)],
         check=check_photo_asks,
+    )
+)
+
+
+# --------------------------------------------------------------------------
+# Memory evals (the area the spec cares about most)
+# --------------------------------------------------------------------------
+
+
+def check_no_memory_for_one_off(conn, user_id, replies):
+    fails = []
+    mems = db.get_memories(conn, user_id)
+    if mems:
+        fails.append(
+            "one-off meal chatter must NOT be saved as memory, got: "
+            f"{[(m.kind, m.content) for m in mems]}"
+        )
+    return fails
+
+
+CASES.append(
+    EvalCase(
+        name="memory_negative_selectivity",
+        correct_is="'had biryani at rahul's party last night, it was amazing' logs the meal but saves NOTHING as memory — selectivity means refusing to remember one-offs",
+        turns=[("had biryani at rahul's party last night, it was amazing", None)],
+        check=check_no_memory_for_one_off,
+    )
+)
+
+
+def seed_vegetarian_preference(conn, user_id):
+    db.save_memory(conn, user_id, "preference", "vegetarian", key="diet")
+
+
+def check_retraction(conn, user_id, replies):
+    fails = []
+    active = db.get_memories(conn, user_id)
+    if any(m.content.strip().lower() == "vegetarian" for m in active):
+        fails.append("the retracted 'vegetarian' preference is still active after the update")
+    return fails
+
+
+CASES.append(
+    EvalCase(
+        name="memory_retraction",
+        correct_is="with 'vegetarian' saved, 'i'm not vegetarian anymore, i eat chicken now' deactivates the old preference (replaced via forget_memory, not piled onto)",
+        turns=[("i'm not vegetarian anymore, i eat chicken now", None)],
+        seed=seed_vegetarian_preference,
+        check=check_retraction,
+    )
+)
+
+
+def check_cross_session_vegetarian(conn, user_id, replies):
+    fails = []
+    meals = _meals(conn, user_id)
+    if meals:
+        fails.append(
+            "chicken after a saved vegetarian preference must be confirmed first, "
+            f"silently logged: {[m.description for m in meals]}"
+        )
+    if "vegetarian" not in replies[-1].reply.lower():
+        fails.append(f"reply should flag the vegetarian conflict: {replies[-1].reply[:120]!r}")
+    prefs = [
+        m
+        for m in db.get_memories(conn, user_id)
+        if m.kind == "preference" and "vegetarian" in m.content.lower()
+    ]
+    if not prefs:
+        fails.append("the vegetarian preference must persist across the session boundary")
+    # the fact can only have come from memory: history was wiped at NEW_SESSION
+    veg_in_history = any(
+        m["role"] == "user" and "vegetarian" in m["content"].lower()
+        for m in db.recent_messages(conn, user_id, limit=20)
+    )
+    if veg_in_history:
+        fails.append("history should not carry the fact across NEW_SESSION — memory must")
+    return fails
+
+
+CASES.append(
+    EvalCase(
+        name="memory_cross_session_conflict",
+        correct_is="vegetarian saved in session 1; in a FRESH session (history wiped) 'had chicken curry' is flagged, not silently logged — the fact traveled via memory only",
+        turns=[
+            ("i'm vegetarian btw", None),
+            (NEW_SESSION, None),
+            ("had chicken curry for dinner", None),
+        ],
+        check=check_cross_session_vegetarian,
+    )
+)
+
+
+def seed_structured_usual(conn, user_id):
+    db.save_memory(
+        conn, user_id, "usual", "2 paratha and 1 cup chai", key="breakfast",
+        data=json.dumps(
+            [
+                {"food": "paratha", "quantity": 2, "unit": "medium paratha"},
+                {"food": "chai", "quantity": 1, "unit": "cup with sugar"},
+            ]
+        ),
+    )
+
+
+def check_usual_cross_session(conn, user_id, replies):
+    fails = []
+    meals = _meals(conn, user_id)
+    if len(meals) != 1:
+        fails.append(f"'my usual' in a fresh session should log exactly 1 meal, got {len(meals)}")
+        return fails
+    items = {i.food.lower(): i.quantity for i in meals[0].items}
+    if items.get("paratha") != 2 or items.get("chai") != 1:
+        fails.append(
+            f"the structured usual (paratha x2 + chai x1) must be logged exactly, got {items}"
+        )
+    return fails
+
+
+CASES.append(
+    EvalCase(
+        name="memory_usual_cross_session",
+        correct_is="a structured usual saved in one session is logged EXACTLY (paratha x2, chai x1) from memory in a fresh session",
+        turns=[(NEW_SESSION, None), ("my usual", None)],
+        seed=seed_structured_usual,
+        check=check_usual_cross_session,
     )
 )

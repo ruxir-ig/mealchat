@@ -15,7 +15,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from evals.cases import CASES
+from evals.cases import CASES, NEW_SESSION
 from mealchat.agent import MealChatAgent
 from mealchat.config import load_settings
 
@@ -39,6 +39,18 @@ def run(selected: list[str] | None = None) -> int:
         replies = []
         t0 = time.perf_counter()
         for text, image in case.turns:
+            if text == NEW_SESSION:
+                # fresh agent on the SAME DB, history wiped — only memory can
+                # carry facts across this boundary. Adopts the existing event
+                # loop (a second loop in-process would break the HTTP
+                # library's pooled connections; a real restart is a new
+                # process, where that can't happen).
+                agent = MealChatAgent(settings, loop=agent._loop)
+                with agent.conn:
+                    agent.conn.execute(
+                        "DELETE FROM messages WHERE user_id = ?", (user_id,)
+                    )
+                continue
             r = agent.handle(user_id, text, image_path=image)
             replies.append(r)
         wall = time.perf_counter() - t0
@@ -47,7 +59,8 @@ def run(selected: list[str] | None = None) -> int:
         tag = " [separator]" if case.separator else ""
         print(f"{status}: {case.name}{tag} ({wall:.1f}s)")
         for text, _ in case.turns:
-            print(f"    > {text if text else '[photo]' }")
+            label = "[new session]" if text == NEW_SESSION else (text or "[photo]")
+            print(f"    > {label}")
         for r in replies:
             print(f"    < {r.reply}")
             if fails:

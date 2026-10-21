@@ -104,7 +104,11 @@ class MealChatAgent:
     is also exactly the interface the task spec asks for.
     """
 
-    def __init__(self, settings: Settings | None = None):
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ):
         self.settings = settings or load_settings()
         self.conn = db.connect(self.settings.db_path)
         db.init_db(self.conn)
@@ -112,11 +116,19 @@ class MealChatAgent:
         self.vision_llm = models.vision_llm(self.settings)
         # estimator = same text model, temperature 0 — nutrition numbers shouldn't be creative
         self.estimator = models.make_estimator(models.text_llm(self.settings, temperature=0.0))
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(
-            target=self._loop.run_forever, daemon=True, name="mealchat-agent-loop"
-        )
-        self._thread.start()
+        # An existing loop can be adopted (used by the eval runner to simulate
+        # fresh sessions in-process: the HTTP library pools connections per
+        # event loop, so a second loop in one process breaks pooled clients —
+        # a real restart is a fresh process where that can't happen).
+        if loop is not None:
+            self._loop = loop
+            self._thread = None
+        else:
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(
+                target=self._loop.run_forever, daemon=True, name="mealchat-agent-loop"
+            )
+            self._thread.start()
 
     # ------------------------------------------------------------------ core
 
