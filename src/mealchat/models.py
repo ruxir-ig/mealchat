@@ -1,12 +1,12 @@
 """LLM client factories.
 
-Two deliberately different models through one OpenAI-compatible gateway:
-  - text:   deepseek-v4p1-flash — fast, tool calling, runs the agent loop
-  - vision: glm-5.3-flash      — multimodal, only sees photos
+Two deliberately different models through one OpenAI-compatible API:
+  - text:   the conversation model — fast, tool calling, runs the agent loop
+  - vision: a separate multimodal model — only sees photos
 
-Both are free-tier models on the local gateway. Both are configurable via env
-(see .env.example) so a reviewer can point them at any OpenAI-compatible
-provider without touching code.
+Defaults (set in config.py) are public OpenAI models; both are configurable
+via env (see .env.example) so a reviewer can point them at any provider
+without touching code.
 """
 
 from __future__ import annotations

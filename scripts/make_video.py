@@ -84,8 +84,9 @@ SPEED = 1.6  # duration multiplier; >1 = slower typing (longer video)
 
 
 def _fonts():
-    from PIL import ImageFont
     from glob import glob
+
+    from PIL import ImageFont
 
     def pick(cands: list[str], size: int):
         for c in cands:

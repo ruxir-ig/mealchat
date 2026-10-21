@@ -1,6 +1,6 @@
 """Latency bench — p50/p95 of agent.handle() for text and photo paths.
 
-    uv run python scripts/bench.py          # full run (~6-10 min on the free tier)
+    uv run python scripts/bench.py          # full run (~6-10 min on the tested config)
     uv run python scripts/bench.py text      # only scenarios matching 'text'
 
 Scenarios (fresh user + seeded DB state per run so each measured turn is
