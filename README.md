@@ -24,7 +24,7 @@ Built as the CalorAI AI-Engineer test task. Python, LangGraph, SQLite, two delib
 
 ## Status & honest gaps
 
-All six core features are implemented: 20-case eval suite (three repeats per case, 59/60 passing — details below), 63 unit tests, measured p50/p95 latency. What is **not** done:
+All six core features are implemented: 20-case eval suite (three repeats per case, 59/60 passing — details below), 72 unit tests, measured p50/p95 latency. What is **not** done:
 
 - **LangSmith tracing** — wired but off: no key exists in this environment, so **no public trace link is included**. With `LANGSMITH_TRACING=true` + `LANGSMITH_API_KEY` set in `.env`, one user turn becomes one trace with the vision call and the agent graph nested under it, tagged with `user_id` and the path (text/photo). With the vars unset (the default), tracing is fully off — verified by running the evals in that mode.
 - **Streaming** — not implemented, including a CLI `--stream` flag I chose to skip: doing it properly needs a second token-streaming path next to the single `handle()` core that the evals and benchmark measure, and the task allows skipping when it complicates the core. `handle()` returns a complete turn.
@@ -66,7 +66,7 @@ Run it:
 uv run mealchat                                     # terminal chat (REPL)
 uv run mealchat --image fixtures/photos/Chapati.jpg this was lunch
 uv run uvicorn mealchat.server:app                 # web chat at http://127.0.0.1:8000
-uv run pytest                                       # 63 unit tests (no network)
+uv run pytest                                       # 72 unit tests (no network, no key needed)
 uv run python -m evals.run                          # 20-case eval suite (live models)
 uv run python -m evals.run --repeat 3               # pass rates per case + style metric
 uv run python scripts/bench.py                      # latency p50/p95 (live models)
@@ -110,16 +110,16 @@ Nine tools, split by what they do to state, not by data type:
 | tool | path | why it exists |
 |---|---|---|
 | `log_meal` | write | the one happy-path call: items + `portion` fraction; resolves nutrition internally |
-| `edit_meal` | write | corrections are **spot changes** — only mentioned foods change, everything else is kept byte-identical |
+| `edit_meal` | write | corrections are **spot changes** — only mentioned foods change, everything else is kept byte-identical; `portion` is absolute (rescaled from the share the meal was logged at) |
 | `delete_meal` | write | soft delete, keeps audit trail, drops out of totals |
 | `repeat_meals` | write | copies past meals with items exactly as logged — "same as yesterday" with zero re-estimation |
 | `save_memory` | write | durable facts only, keyed for upsert, usuals with structured items |
 | `forget_memory` | write | retract outdated facts by id |
-| `get_meals` | read | past meals, filterable by date/food — the correction-finder |
+| `get_meals` | read | past meals, filterable by date/food — the correction-finder; a dated query returns the whole day, and truncation is always stated |
 | `day_totals` | read | the "how am I doing?" answer: totals + breakdown + targets + remaining |
 | `nutrition_lookup` | read | one-off questions ("calories in a samosa?"), table hit or one-time estimate then cached |
 
-The judgment calls: `log_meal` resolves nutrition *inside* the tool (builtin table → DB cache → one batched LLM estimate for the whole meal, cached forever) so a normal log is **one** tool call, not a lookup-then-log dance. `edit_meal` is separate from `log_meal` because corrections are a different *act* — and it never re-resolves unmentioned items, so a "3 rotis not 2" fix can't quietly change the chicken row. `portion` is a parameter (not LLM arithmetic) because "half of this was my brother's" must scale every item deterministically — the model decides one number, the tool does the multiplication. Gram/ml quantities are converted through the food's grams-per-unit (never multiplied raw), and a sanity guard refuses any log with an item over 2500 kcal or a meal over 4000 — the agent asks instead of poisoning the day.
+The judgment calls: `log_meal` resolves nutrition *inside* the tool (builtin table → DB cache → one batched LLM estimate for the whole meal, cached forever) so a normal log is **one** tool call, not a lookup-then-log dance. `edit_meal` is separate from `log_meal` because corrections are a different *act* — and it never re-resolves unmentioned items, so a "3 rotis not 2" fix can't quietly change the chicken row. `portion` is a parameter (not LLM arithmetic) because "half of this was my brother's" must scale every item deterministically — the model decides one number, the tool does the multiplication. Gram/ml quantities are converted through the food's grams-per-unit (never multiplied raw) and refused when no gram basis exists, and a sanity guard refuses any log with an item over 2500 kcal or a meal over 4000 — the agent asks instead of poisoning the day.
 
 Totals correctness is a data-layer property, not a prompt property: `day_totals` always aggregates from live rows, never incrementally maintained — so edits and deletions can't leave stale sums (unit-tested in `test_db.py`, including the sign of "kcal left" vs a saved target).
 
@@ -143,7 +143,7 @@ The principle: over-asking kills the texting feel, under-asking poisons the data
 - **Memory selectivity, retraction, and cross-session persistence** — one-off chatter saves nothing; "not vegetarian anymore" deactivates the old preference; facts and structured usuals survive a `NEW_SESSION`. ✅
 - **`delete_item_from_meal`** ("i didn't actually have the chai"), **`grazing_follow_up_answer`** (asks, then logs the named foods), **`vision_unsure_asks`** (keyboard photo → asks, never guesses). ✅
 
-**Final run, `--repeat 3` (60 case-runs on the final code, tested configuration): 59/60.** The single miss was `vegetarian_conflict_flagged` on one run where the agent flagged the conflict correctly ("Thought you were veg 🌱 — want me to log it anyway?") but the check demanded the literal word "vegetarian"; the matcher now accepts the abbreviation and that case is 3/3 standalone. Soft style metric across all 84 replies: **100% ≤45 words, 95% with ≤1 question mark.**
+**Final run, `--repeat 3` (60 case-runs on the final code, tested configuration): 59/60.** The single miss was `photo_of_plate_logs` on one run: the vision model labelled the plain plate of rotis a shared/family spread, so the agent asked "how much of it was yours?" instead of logging. That is the prompt's rule for shared spreads, so it's a defensible ask on a mislabelled photo rather than a wrong log, but the check counts it as a miss and I left it that way. The checks were also tightened after an independent review: the photo-share checks fail any item more than 15% off the expected share (a double-halved meal used to pass), and the learned-usual check requires a new meal today rather than accepting a seeded one. Soft style metric across all 84 replies: **100% ≤45 words, 95% with ≤1 question mark.**
 
 *(Like the latency numbers, eval numbers come from the tested configuration; the public defaults (gpt-4o-mini / gpt-4o) have not been evaluated — no OpenAI key exists in this environment.)*
 
@@ -196,6 +196,7 @@ Real durations from the git timestamps:
 | 19:17–20:12 | initial build — model probing, persistence + nutrition layers, agent core, evals to green, CLI/web UI, bench, video, README | ~55 min |
 | 22:11–22:24 | review round 1 — public OpenAI defaults, calorie-sign bug, async vision, forget tool, web isolation, README honesty | ~13 min |
 | 22:36–23:35 | review round 2 (this one) — unit conversions + sanity guard, fail-safe vision, spot-change edit semantics, keyed/structured memory + repeat_meals, 3h history window, memory evals, delete/grazing evals + --repeat, prompt caching, vision timeout, caption-to-vision, LangSmith wiring, realistic benchmark, video render fixes | ~59 min |
+| 23:40–00:10 | review round 3: an independent review by a second model, then fixes. Clean-clone test that needed a key, mass bases like '50 g dry', unconvertible grams refused, nutrition_lookup cache keeping grams_per_unit, units in structured usuals, absolute edit portions, whole-day get_meals, and two eval checks that passed on wrong behaviour | ~30 min |
 
 ## What I'd fix or build next
 
@@ -211,6 +212,7 @@ Real durations from the git timestamps:
 
 - The entire build was done with an AI coding agent (OpenCode/T3, GLM-5.3 model) driving the small-base/test/add/repeat loop — including this README's first draft, the eval assertions, and the fixes for edge cases its own evals caught (the photo double-halving, the edit_meal re-resolution bug). Human (me) set the architecture decisions, the ask-vs-log product line, the memory design, and reviewed every commit.
 - The app's own models were chosen by capability probes (a live tool-calling check for the text model, a live image call for the vision model) and cost/latency fit, before any code was written.
+- Review rounds 2 and 3 used other agents as reviewers: Claude Code (Claude Opus) audited the code and drove the fixes, and a final independent pass by GPT-6.1 (via Codex) found the issues fixed in round 3. Every finding was reproduced before it was fixed.
 - AI-assisted ≠ untested: every layer has unit tests, and the 20 eval cases run against live models, not mocks.
 - The walkthrough video was also agent-generated (scripts/make_video.py) from a real session — stated plainly rather than passed off as a human recording.
 
