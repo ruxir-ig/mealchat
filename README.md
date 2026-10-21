@@ -148,6 +148,7 @@ Measured by `scripts/bench.py` around `agent.handle()` — the full core (vision
 - **One persistent event loop** owned by the agent (sync `handle()` schedules onto it) — the LLM clients' httpx connection pools stay warm across turns instead of paying a fresh TLS handshake per message, and it dodges the "Event loop is closed" trap of `asyncio.run`-per-call. The vision call itself runs `ainvoke` on that loop, so one slow photo never blocks other users.
 - **One-tool-call logging** — `log_meal` resolves nutrition internally from the builtin table → DB cache → a single *batched* estimate call for unknown foods (cached forever, so "same as yesterday" is pure table hits).
 - **Image resize before the vision call** — EXIF-oriented, longest side 1024px, JPEG q85 (~50KB vs multi-MB phone photos): less upload, fewer vision tokens. I A/B-tested 768px (no reliable gain — reasoning dominates, and it risked truncated JSON) so 1024 stayed.
+- **`reasoning_effort: low` where the provider supports it** (opt-in env var; the tested config uses it) — measurably less reasoning volume with no quality loss on this task.
 - **Lean prompts** — system prompt + memory block + 8-turn history + one photo block ≈ 1.2K tokens per turn.
 - **Correct tool ordering** — a simple log is 2 LLM round trips (decide+tool, then confirm); a correction is 3 (find, edit, confirm).
 
