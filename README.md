@@ -4,8 +4,6 @@ A conversational meal-logging agent. You text what you ate — *"had 2 parathas 
 
 Built as the CalorAI AI-Engineer test task. Python, LangGraph, SQLite, two deliberately different models for text and vision.
 
-**Walkthrough video: [docs/walkthrough.mp4](docs/walkthrough.mp4)** — an auto-generated screencast rendered from a real live session; every reply, latency and tool effect on screen comes verbatim from [docs/demo_session.json](docs/demo_session.json). It covers the architecture, the tool split, memory write/read, a photo case, the photo+caption case, a correction, and the latency discussion.
-
 ```
                  "had 2 rotis" ──┐
                  [photo of plate]─┤
@@ -30,7 +28,7 @@ All six core features are implemented: 20-case eval suite (three repeats per cas
 - **Streaming** — not implemented, including a CLI `--stream` flag I chose to skip: doing it properly needs a second token-streaming path next to the single `handle()` core that the evals and benchmark measure, and the task allows skipping when it complicates the core. `handle()` returns a complete turn.
 - Vision-model latency on the tested gateway is the weak point — see the latency section.
 - Nutrition data is a hardcoded Indian-first table + cached model estimates — by design (the task says nutrition accuracy is not the point; the tradeoff is documented below).
-- The tested vision model sometimes reports a low-confidence dish its own description doesn't mention (e.g. a "mixed curry" on a plate of plain rotis — visible in the recorded demo). Mitigations: low-confidence MAIN dishes must be flagged in the reply or questioned (never silently logged), plus the 2500/4000 kcal sanity caps. Known failure mode, not fixed.
+- The tested vision model sometimes reports a low-confidence dish its own description doesn't mention (e.g. a "mixed curry" on a plate of plain rotis). Mitigations: low-confidence MAIN dishes must be flagged in the reply or questioned (never silently logged), plus the 2500/4000 kcal sanity caps. Known failure mode, not fixed.
 - The commit history is genuine but compressed — several chunks were finished inside the same working window, so some commits share timestamps; it is not a minute-by-minute narrative.
 
 ## Where I disagree with the spec
@@ -70,10 +68,9 @@ uv run pytest                                       # 72 unit tests (no network,
 uv run python -m evals.run                          # 20-case eval suite (live models)
 uv run python -m evals.run --repeat 3               # pass rates per case + style metric
 uv run python scripts/bench.py                      # latency p50/p95 (live models)
-uv run python scripts/make_video.py --record && uv run python scripts/make_video.py --render
 ```
 
-The core interface is interface-agnostic — the CLI, web UI, evals, benchmark and video all call exactly:
+The core interface is interface-agnostic — the CLI, web UI, evals and benchmark all call exactly:
 
 ```python
 result = agent.handle(user_id, text, image_path=None)   # -> AgentResult
@@ -193,9 +190,9 @@ Real durations from the git timestamps:
 
 | when | what | time |
 |---|---|---|
-| 19:17–20:12 | initial build — model probing, persistence + nutrition layers, agent core, evals to green, CLI/web UI, bench, video, README | ~55 min |
+| 19:17–20:12 | initial build — model probing, persistence + nutrition layers, agent core, evals to green, CLI/web UI, bench, README | ~55 min |
 | 22:11–22:24 | review round 1 — public OpenAI defaults, calorie-sign bug, async vision, forget tool, web isolation, README honesty | ~13 min |
-| 22:36–23:35 | review round 2 (this one) — unit conversions + sanity guard, fail-safe vision, spot-change edit semantics, keyed/structured memory + repeat_meals, 3h history window, memory evals, delete/grazing evals + --repeat, prompt caching, vision timeout, caption-to-vision, LangSmith wiring, realistic benchmark, video render fixes | ~59 min |
+| 22:36–23:35 | review round 2 (this one) — unit conversions + sanity guard, fail-safe vision, spot-change edit semantics, keyed/structured memory + repeat_meals, 3h history window, memory evals, delete/grazing evals + --repeat, prompt caching, vision timeout, caption-to-vision, LangSmith wiring, realistic benchmark | ~59 min |
 | 23:40–00:10 | review round 3: an independent review by a second model, then fixes. Clean-clone test that needed a key, mass bases like '50 g dry', unconvertible grams refused, nutrition_lookup cache keeping grams_per_unit, units in structured usuals, absolute edit portions, whole-day get_meals, and two eval checks that passed on wrong behaviour | ~30 min |
 
 ## What I'd fix or build next
@@ -214,7 +211,6 @@ Real durations from the git timestamps:
 - The app's own models were chosen by capability probes (a live tool-calling check for the text model, a live image call for the vision model) and cost/latency fit, before any code was written.
 - Review rounds 2 and 3 used other agents as reviewers: Claude Code (Claude Opus) audited the code and drove the fixes, and a final independent pass by GPT-6.1 (via Codex) found the issues fixed in round 3. Every finding was reproduced before it was fixed.
 - AI-assisted ≠ untested: every layer has unit tests, and the 20 eval cases run against live models, not mocks.
-- The walkthrough video was also agent-generated (scripts/make_video.py) from a real session — stated plainly rather than passed off as a human recording.
 
 ## Credits
 
